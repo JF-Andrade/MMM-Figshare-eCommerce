@@ -1,0 +1,40 @@
+# --- Python & Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.python-version
+.venv/
+.conda/
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# --- Cache & Diagnostics ---
+.pytest_cache/
+.pytensor/
+.ipynb_checkpoints/
+.mypy_cache/
+.ruff_cache/
+
+# --- Project Data ---
+data/
+mlruns/
+models/
+reports/
+*.parquet
+*.parquet.crc
+*.csv
+*.xlsx
+*.json
+!**/.gitkeep
+
+# --- OS Specific ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini

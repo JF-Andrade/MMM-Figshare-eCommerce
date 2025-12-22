@@ -1,0 +1,6 @@
+[global]
+device = cpu
+floatX = float64
+
+[blas]
+ldflags = -LC:/Users/jorda/miniconda3/envs/mmm-env/Library/lib -lmkl_rt
