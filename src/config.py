@@ -86,8 +86,8 @@ SATURATION_PRIORS = {
 MCMC_CHAINS = 4
 MCMC_DRAWS = 2000
 MCMC_TUNE = 1500
-MCMC_TARGET_ACCEPT = 0.95
-MCMC_MAX_TREEDEPTH = 12
+MCMC_TARGET_ACCEPT = 0.99
+MCMC_MAX_TREEDEPTH = 15
 
 # =============================================================================
 # Channel Columns
