@@ -25,6 +25,7 @@ data/
 mlruns/
 /models/
 reports/
+docs/educational/
 *.parquet
 *.parquet.crc
 *.csv
