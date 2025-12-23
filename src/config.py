@@ -58,8 +58,8 @@ YEARLY_SEASONALITY = 2
 
 MCMC_CHAINS = 4
 MCMC_DRAWS = 2000
-MCMC_TUNE = 1500
-MCMC_TARGET_ACCEPT = 0.90
+MCMC_TUNE = 1000
+MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 18
 
 # =============================================================================
@@ -140,16 +140,14 @@ CPC_COLS = [
     "META_INSTAGRAM_CPC", "META_OTHER_CPC", "TIKTOK_CPC"
 ]
 
-ROLLING_COLS = (
-    [f"{c}_ROLLING_7D_MEAN" for c in SPEND_COLS] +
-    [f"{c}_ROLLING_7D_STD" for c in SPEND_COLS]
-)
+# Rolling Mean removed: redundant with Bayesian adstock (r=0.90 correlation)
+ROLLING_COLS = [f"{c}_ROLLING_7D_STD" for c in SPEND_COLS]
 
 SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
 
-CUSTOMER_COLS = [
-    "AVG_ORDER_VALUE", "UNITS_PER_ORDER", "NEW_CUSTOMER_RATIO", "DISCOUNT_RATE"
-]
+# Customer metrics disabled: data leakage (derived from target/outcome variables)
+# Original: ["AVG_ORDER_VALUE", "UNITS_PER_ORDER", "NEW_CUSTOMER_RATIO", "DISCOUNT_RATE"]
+CUSTOMER_COLS: list[str] = []
 
 SEASON_COLS = ["sin_1", "cos_1", "sin_2", "cos_2"]
 

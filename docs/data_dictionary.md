@@ -58,16 +58,16 @@ Source: `data/raw/conjura_mmm_data_dictionary.xlsx`
 
 The pipeline generates several derived features to improve model signal.
 
-| Feature Type            | Description                                                     |
-| ----------------------- | --------------------------------------------------------------- |
-| **Efficiency (CTR)**    | `click / impression` for each channel.                          |
-| **Cost (CPC)**          | `spend / click` for each channel.                               |
-| **Rolling (7D)**        | 7-day rolling Mean and Std for all spend channels.              |
-| **Share of Spend**      | `% of total daily spend` allocated to each channel.             |
-| **Customer Behavior**   | Average Order Value (AOV), Units per Order, New Customer Ratio. |
-| **Temporal**            | Holiday indicator, linear trend, and Q4 seasonality.            |
-| **Fourier Seasonality** | 2-term Fourier series (sin/cos) to capture yearly patterns.     |
-| **Adstock**             | Geometric decay applied per territory (`l_max=12`).             |
-| **Saturation**          | Logistic transformation applied to adstocked spend.             |
+| Feature Type            | Description                                                 |
+| ----------------------- | ----------------------------------------------------------- |
+| **Efficiency (CTR)**    | `click / impression` for each channel.                      |
+| **Cost (CPC)**          | `spend / click` for each channel.                           |
+| **Rolling (7D)**        | 7-day rolling Std (volatility) for all spend channels.      |
+| **Share of Spend**      | `% of total daily spend` allocated to each channel.         |
+| **Customer Behavior**   | ~~Disabled: data leakage risk~~                             |
+| **Temporal**            | Holiday indicator, linear trend, and Q4 seasonality.        |
+| **Fourier Seasonality** | 2-term Fourier series (sin/cos) to capture yearly patterns. |
+| **Adstock**             | Geometric decay applied per territory (`l_max=12`).         |
+| **Saturation**          | Logistic transformation applied to adstocked spend.         |
 
-> Total features in the Hierarchical Model: **57**
+> Total features in the Hierarchical Model: **44**

@@ -122,19 +122,15 @@ def compute_temporal_features(df: pd.DataFrame, date_col: str = "DATE_DAY") -> p
 
 
 def compute_rolling_features(df: pd.DataFrame, window: int = 7) -> pd.DataFrame:
-    """Compute rolling statistics for spend channels."""
+    """Compute rolling std (volatility) for spend channels."""
     df = df.copy()
     
     for spend_col in SPEND_COLS:
         if spend_col not in df.columns:
             continue
         
-        # Rolling mean (momentum indicator)
-        df[f"{spend_col}_ROLLING_{window}D_MEAN"] = (
-            df[spend_col].rolling(window, min_periods=1).mean()
-        )
-        
         # Rolling std (volatility indicator)
+        # Note: Rolling mean removed - redundant with Bayesian adstock
         df[f"{spend_col}_ROLLING_{window}D_STD"] = (
             df[spend_col].rolling(window, min_periods=1).std().fillna(0)
         )
@@ -171,16 +167,16 @@ def engineer_features(
     Features created:
     - Efficiency: CTR per channel
     - Cost: CPC per channel
-    - Customer: AOV, units/order, discount rate, new customer ratio
     - Temporal: day of week, quarter, week of year
-    - Rolling: 7-day mean and std of spend
+    - Rolling: 7-day std of spend (volatility)
     - Share: channel spend share
     """
     df = compute_efficiency_metrics(df)
     df = compute_cost_metrics(df)
-    df = compute_customer_metrics(df)
+    # compute_customer_metrics disabled: data leakage risk
     df = compute_temporal_features(df, date_col)
     df = compute_rolling_features(df, rolling_window)
     df = compute_spend_share(df)
     
     return df
+
