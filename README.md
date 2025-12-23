@@ -107,6 +107,23 @@ Results and visualizations are saved to `models/`:
 4. Holiday indicator and trend features
 5. Low-spend channels aggregated into OTHER_SPEND (< 5% of total spend)
 
+### Features (59 Total)
+
+All features are centralized in `src/config.py`.
+
+| Category    | Count | Features                                                                                                                                                                                                  |
+| ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **SPEND**   | 9     | `GOOGLE_PAID_SEARCH_SPEND`, `GOOGLE_SHOPPING_SPEND`, `GOOGLE_PMAX_SPEND`, `GOOGLE_DISPLAY_SPEND`, `GOOGLE_VIDEO_SPEND`, `META_FACEBOOK_SPEND`, `META_INSTAGRAM_SPEND`, `META_OTHER_SPEND`, `TIKTOK_SPEND` |
+| **CONTROL** | 6     | `trend`, `is_holiday`, `month`, `week_of_year`, `quarter`, `is_q4`                                                                                                                                        |
+| **CTR**     | 7     | `GOOGLE_PAID_SEARCH_CTR`, `GOOGLE_SHOPPING_CTR`, `GOOGLE_PMAX_CTR`, `GOOGLE_DISPLAY_CTR`, `GOOGLE_VIDEO_CTR`, `META_FACEBOOK_CTR`, `META_INSTAGRAM_CTR`                                                   |
+| **CPC**     | 9     | `GOOGLE_PAID_SEARCH_CPC`, `GOOGLE_SHOPPING_CPC`, `GOOGLE_PMAX_CPC`, `GOOGLE_DISPLAY_CPC`, `GOOGLE_VIDEO_CPC`, `META_FACEBOOK_CPC`, `META_INSTAGRAM_CPC`, `META_OTHER_CPC`, `TIKTOK_CPC`                   |
+| **ROLLING** | 9     | `{CHANNEL}_ROLLING_7D_STD` for each spend channel                                                                                                                                                         |
+| **SHARE**   | 9     | `{CHANNEL}_SHARE` for each spend channel                                                                                                                                                                  |
+| **TRAFFIC** | 6     | `DIRECT_CLICKS`, `BRANDED_SEARCH_CLICKS`, `ORGANIC_SEARCH_CLICKS`, `EMAIL_CLICKS`, `REFERRAL_CLICKS`, `ALL_OTHER_CLICKS`                                                                                  |
+| **SEASON**  | 4     | `sin_1`, `cos_1`, `sin_2`, `cos_2` (Fourier terms)                                                                                                                                                        |
+
+> **Model Usage:** SPEND features go through Bayesian adstock/saturation. All other features use Horseshoe regularization.
+
 ### Validation
 
 - Expanding window cross-validation (3 folds)
