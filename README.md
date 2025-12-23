@@ -247,8 +247,6 @@ MMM-Figshare-eCommerce/
 │   ├── optimization.py        # Budget allocation optimizer
 │   ├── model_insights.py      # Adstock/saturation parameter extraction
 │   ├── comparison.py          # Model comparison utilities
-│   ├── value_estimation.py    # Project value and ROI calculation
-│   ├── project_pricing.py     # Market pricing estimates
 │   ├── schemas.py             # Pydantic data schemas
 │   └── validation.py          # Expanding window CV module
 │
@@ -261,8 +259,7 @@ MMM-Figshare-eCommerce/
 │       ├── 02_Budget_Optimization.py
 │       ├── 03_Regional_Analysis.py
 │       ├── 04_Model_Details.py
-│       ├── 05_Model_Comparison.py
-│       └── 06_Project_Value.py
+│       └── 05_Model_Comparison.py
 │
 ├── tests/
 │   ├── test_data_loader.py    # Data loading tests

@@ -171,9 +171,9 @@ PRIOR_NU_BETA = 0.1
 # 7. BASELINE MODEL CONFIGURATION (freq. Ridge)
 # =============================================================================
 
-RIDGE_ALPHAS = [0.1, 1, 5, 10, 25, 40, 45, 50, 100, 500]
-BASELINE_ADSTOCK_DECAY = [0.1, 0.3, 0.5, 0.7, 0.9]
-BASELINE_SATURATION_HALF = [0.1, 0.3, 0.5, 0.7]
+RIDGE_ALPHAS = [0.1, 1, 5, 10, 25, 40, 50, 60, 75, 100, 500]
+BASELINE_ADSTOCK_DECAY = [0.001, 0.01, 0.05, 0.1, 0.2]
+BASELINE_SATURATION_HALF = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5]
 
 # =============================================================================
 # 8. EXPERIMENT TRACKING (MLflow)
