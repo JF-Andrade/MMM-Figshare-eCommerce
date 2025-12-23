@@ -132,3 +132,113 @@ def aggregate_cv_results(results: list[CVResult]) -> dict:
     agg["total_divergences"] = sum(r.divergences for r in results)
 
     return agg
+
+
+def validate_panel_for_cv(
+    df: pd.DataFrame,
+    geo_col: str,
+    date_col: str,
+    min_weeks: int,
+) -> None:
+    """
+    Validate that panel data meets CV requirements.
+    
+    Raises:
+        ValueError: If any territory has insufficient data.
+    """
+    weeks_per_territory = df.groupby(geo_col)[date_col].nunique()
+    insufficient = weeks_per_territory[weeks_per_territory < min_weeks]
+    
+    if len(insufficient) > 0:
+        msg = f"Territories with < {min_weeks} weeks: {insufficient.to_dict()}"
+        raise ValueError(msg)
+
+
+def panel_expanding_window_cv(
+    df: pd.DataFrame,
+    geo_col: str,
+    date_col: str,
+    n_splits: int = 3,
+    min_train_weeks: int = 52,
+    test_weeks: int = 12,
+) -> "Iterator[CVFold]":
+    """
+    Generate expanding window splits for panel data.
+    
+    Each territory receives the SAME temporal split to prevent data leakage.
+    
+    Args:
+        df: Panel DataFrame (must be sorted by geo, then date)
+        geo_col: Column name for territory identifier
+        date_col: Column name for date/week
+        n_splits: Number of CV folds
+        min_train_weeks: Minimum training weeks for fold 1
+        test_weeks: Fixed test window size
+        
+    Yields:
+        CVFold objects with week-based indices
+        
+    Raises:
+        ValueError: If insufficient data for requested folds
+    """
+    total_weeks_needed = min_train_weeks + n_splits * test_weeks
+    min_territory_weeks = df.groupby(geo_col)[date_col].nunique().min()
+    
+    if min_territory_weeks < total_weeks_needed:
+        msg = (
+            f"Insufficient data: need {total_weeks_needed} weeks, "
+            f"smallest territory has {min_territory_weeks}"
+        )
+        raise ValueError(msg)
+    
+    for i in range(n_splits):
+        train_end_week = min_train_weeks + i * test_weeks
+        test_start_week = train_end_week
+        test_end_week = train_end_week + test_weeks
+        
+        yield CVFold(
+            fold=i + 1,
+            train_start=0,
+            train_end=train_end_week,
+            test_start=test_start_week,
+            test_end=test_end_week,
+        )
+
+
+def get_panel_fold_indices(
+    df: pd.DataFrame,
+    fold: CVFold,
+    geo_col: str,
+    date_col: str,
+) -> tuple[list[int], list[int]]:
+    """
+    Get row indices for train/test split in panel data.
+    
+    Returns:
+        (train_indices, test_indices) as lists of DataFrame row positions
+        
+    Raises:
+        AssertionError: If data leakage detected (train dates >= test dates)
+    """
+    train_indices = []
+    test_indices = []
+    
+    for territory in df[geo_col].unique():
+        territory_mask = df[geo_col] == territory
+        territory_df = df[territory_mask].sort_values(date_col)
+        territory_positions = territory_df.index.tolist()
+        
+        train_rows = territory_positions[:fold.train_end]
+        test_rows = territory_positions[fold.test_start:fold.test_end]
+        
+        train_indices.extend(train_rows)
+        test_indices.extend(test_rows)
+    
+    # DATA LEAKAGE CHECK
+    train_dates = df.loc[train_indices, date_col].max()
+    test_dates = df.loc[test_indices, date_col].min()
+    assert train_dates < test_dates, (
+        f"Data leakage detected! Max train date {train_dates} >= min test date {test_dates}"
+    )
+    
+    return train_indices, test_indices
