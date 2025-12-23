@@ -102,7 +102,7 @@ def main():
         return ""
 
     styled_df = opt_df.style.applymap(color_change, subset=["change_pct"])
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width="stretch")
 
     # Insights
     st.markdown("---")

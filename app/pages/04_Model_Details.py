@@ -62,7 +62,7 @@ def main():
                     {"Parameter": k, "Value": v}
                     for k, v in params.items()
                 ])
-                st.dataframe(params_df, use_container_width=True)
+                st.dataframe(params_df, width="stretch")
             except Exception as e:
                 st.warning(f"Could not load parameters: {e}")
 
@@ -76,7 +76,7 @@ def main():
                     {"Metric": k, "Value": f"{v:.4f}" if isinstance(v, float) else v}
                     for k, v in metrics.items()
                 ])
-                st.dataframe(metrics_df, use_container_width=True)
+                st.dataframe(metrics_df, width="stretch")
             except Exception as e:
                 st.warning(f"Could not load metrics: {e}")
 
@@ -98,7 +98,7 @@ def main():
             adstock_df = pd.DataFrame(adstock)
             display_cols = ["channel", "alpha_mean", "half_life_weeks"]
             display_cols = [c for c in display_cols if c in adstock_df.columns]
-            st.dataframe(adstock_df[display_cols], use_container_width=True)
+            st.dataframe(adstock_df[display_cols], width="stretch")
 
             st.markdown("""
             **Interpretation:**
@@ -126,7 +126,7 @@ def main():
             sat_df = pd.DataFrame(saturation)
             display_cols = ["channel", "lam_mean"]
             display_cols = [c for c in display_cols if c in sat_df.columns]
-            st.dataframe(sat_df[display_cols], use_container_width=True)
+            st.dataframe(sat_df[display_cols], width="stretch")
 
             st.markdown("""
             **Interpretation:**
@@ -162,7 +162,7 @@ def main():
 
         fig.add_hline(y=1.0, line_dash="dash", line_color="gray", annotation_text="Break-even")
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.warning("Marginal ROAS data not available.")
 

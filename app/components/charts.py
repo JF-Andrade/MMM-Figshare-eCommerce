@@ -44,7 +44,7 @@ def roi_bar_chart(roi_data: list[dict], title: str = "ROI by Channel") -> None:
         showlegend=False,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def contribution_pie_chart(contributions: list[dict], title: str = "Channel Contribution") -> None:
@@ -67,7 +67,7 @@ def contribution_pie_chart(contributions: list[dict], title: str = "Channel Cont
 
     fig.update_layout(height=400)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def optimization_comparison_chart(optimization: list[dict]) -> None:
@@ -103,7 +103,7 @@ def optimization_comparison_chart(optimization: list[dict]) -> None:
         yaxis_title="Spend",
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def reallocation_chart(optimization: list[dict]) -> None:
@@ -136,7 +136,7 @@ def reallocation_chart(optimization: list[dict]) -> None:
         showlegend=False,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def roi_heatmap(roi_data: list[dict]) -> None:
@@ -166,7 +166,7 @@ def roi_heatmap(roi_data: list[dict]) -> None:
 
     fig.update_layout(height=500)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def saturation_curves_chart(saturation: list[dict]) -> None:
@@ -200,7 +200,7 @@ def saturation_curves_chart(saturation: list[dict]) -> None:
         height=400,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def adstock_decay_chart(adstock: list[dict]) -> None:
@@ -236,4 +236,4 @@ def adstock_decay_chart(adstock: list[dict]) -> None:
         height=400,
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")

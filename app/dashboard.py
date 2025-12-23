@@ -245,7 +245,7 @@ def render_regional_tab(deliverables: dict):
     # Regional summary table
     st.markdown("**Regional Summary**")
     regional_df = pd.DataFrame(regional)
-    st.dataframe(regional_df, use_container_width=True)
+    st.dataframe(regional_df, width="stretch")
 
     # Heatmap data
     if roi_data:
@@ -269,7 +269,7 @@ def render_params_tab(deliverables: dict):
         if adstock:
             import pandas as pd
             adstock_df = pd.DataFrame(adstock)
-            st.dataframe(adstock_df, use_container_width=True)
+            st.dataframe(adstock_df, width="stretch")
         else:
             st.warning("Adstock data not available.")
 
@@ -279,7 +279,7 @@ def render_params_tab(deliverables: dict):
         if saturation:
             import pandas as pd
             sat_df = pd.DataFrame(saturation)
-            st.dataframe(sat_df, use_container_width=True)
+            st.dataframe(sat_df, width="stretch")
         else:
             st.warning("Saturation data not available.")
 

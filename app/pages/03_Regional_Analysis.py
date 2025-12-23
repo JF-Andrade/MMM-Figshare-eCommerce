@@ -79,7 +79,7 @@ def main():
     import pandas as pd
     regional_df = pd.DataFrame(filtered_regional)
     regional_df = regional_df.sort_values("avg_roi", ascending=False)
-    st.dataframe(regional_df, use_container_width=True)
+    st.dataframe(regional_df, width="stretch")
 
     # Heatmap
     st.markdown("---")

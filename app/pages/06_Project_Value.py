@@ -109,7 +109,7 @@ def main():
                 "Payback": f"{data['payback_months']:.1f} months",
             })
 
-        st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
 
         # Detailed calculation with selected confidence
         st.markdown("---")
@@ -187,7 +187,7 @@ def main():
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col2:
         st.subheader("Project Pricing")
