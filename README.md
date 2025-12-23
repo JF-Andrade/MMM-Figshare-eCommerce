@@ -143,13 +143,27 @@ Where each channel effect is transformed by:
 2. **Saturation (Diminishing Returns)**: LogisticSaturation
    - Models decreasing marginal returns at higher spend levels
 
-### Prior Distributions (Explicit)
+### Prior Distributions (Bayesian Hierarchical Model)
 
-| Parameter    | Distribution  | Meaning                                                                                              |
-| ------------ | ------------- | ---------------------------------------------------------------------------------------------------- |
-| **alpha**    | Beta(1, 1)    | Adstock decay rate. Equivalent to Uniform(0,1), no prior bias. Values close to 1 = longer carryover. |
-| **lam (λ)**  | Gamma(3, 1)   | Saturation curve steepness. Higher values = more abrupt saturation.                                  |
-| **beta (β)** | HalfNormal(2) | Channel effect magnitude. Larger = more revenue impact per spend.                                    |
+All priors are externalized to `src/config.py` for easy tuning.
+
+| Component      | Parameter     | Distribution     | Config                             | Description                                                                                                                     |
+| -------------- | ------------- | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Adstock**    | α (alpha)     | Beta(2, 2)       | `PRIOR_ADSTOCK_ALPHA/BETA`         | Decay rate controlling how quickly ad effects fade. Values near 0 = rapid decay, near 1 = slow decay. Beta(2,2) centers at 0.5. |
+| **Adstock**    | σ_α           | HalfNormal(0.1)  | `PRIOR_SIGMA_ADSTOCK_TERRITORY`    | Variation in decay rates across territories.                                                                                    |
+| **Saturation** | L             | HalfNormal(1.0)  | `PRIOR_SATURATION_L_SIGMA`         | Half-saturation point: spend level where 50% of max effect is reached. Higher L = more spend needed.                            |
+| **Saturation** | k             | Gamma(2, 1)      | `PRIOR_SATURATION_K_ALPHA/BETA`    | Hill curve steepness. k=1 is linear, k>2 creates sharp S-curve.                                                                 |
+| **Saturation** | σ_L           | HalfNormal(0.1)  | `PRIOR_SIGMA_SATURATION_TERRITORY` | Regional variation in saturation points.                                                                                        |
+| **Hierarchy**  | σ_currency    | HalfNormal(0.5)  | `PRIOR_SIGMA_CURRENCY`             | Baseline revenue variation between currencies (GBP, USD, EUR).                                                                  |
+| **Hierarchy**  | σ_territory   | HalfNormal(0.3)  | `PRIOR_SIGMA_TERRITORY`            | Territory variation nested within currency.                                                                                     |
+| **Channels**   | β_channel     | HalfNormal(0.5)  | `PRIOR_BETA_CHANNEL_SIGMA`         | Global channel effect magnitude. Positive-only ensures spend increases revenue.                                                 |
+| **Channels**   | σ_β_territory | HalfNormal(0.05) | `PRIOR_SIGMA_BETA_TERRITORY`       | Regional variation in channel effectiveness.                                                                                    |
+| **Horseshoe**  | τ             | HalfCauchy(1)    | `PRIOR_HORSESHOE_TAU_BETA`         | Global shrinkage for 43 auxiliary features.                                                                                     |
+| **Horseshoe**  | λ             | HalfCauchy(1)    | `PRIOR_HORSESHOE_LAMBDA_BETA`      | Local shrinkage per feature. Enables sparse feature selection.                                                                  |
+| **Likelihood** | σ_obs         | HalfNormal(0.5)  | `PRIOR_SIGMA_OBS`                  | Observation noise scale (log-revenue).                                                                                          |
+| **Likelihood** | ν             | Gamma(2, 0.1)    | `PRIOR_NU_ALPHA/BETA`              | Student-T degrees of freedom. Low ν (~3-10) = heavy tails for outlier robustness.                                               |
+
+> [!TIP] > **Student-T Likelihood** (`USE_STUDENT_T=True`): Automatically down-weights extreme observations like Black Friday spikes.
 
 ### Control Variables
 
@@ -170,7 +184,7 @@ Where each channel effect is transformed by:
 | Chains        | 4                                 |
 | Draws         | 2,000                             |
 | Tune          | 1,500                             |
-| Target Accept | 0.98                              |
+| Target Accept | 0.99                              |
 | Max Treedepth | 15                                |
 
 ### Validation Strategy
@@ -204,11 +218,13 @@ MMM-Figshare-eCommerce/
 │   └── mmm_hierarchical.py    # Bayesian hierarchical model
 │
 ├── src/
-│   ├── config.py              # Configuration (MLflow settings)
+│   ├── config.py              # Centralized configuration (all hyperparameters)
 │   ├── data_loader.py         # Data loading and validation
 │   ├── preprocessing.py       # Adstock, saturation, calendar features
 │   ├── feature_engineering.py # Feature derivation functions
-│   ├── model.py               # MMM model creation and fitting
+│   ├── models/                # Model package
+│   │   ├── __init__.py        # Package exports
+│   │   └── hierarchical_bayesian.py  # Bayesian MMM with learned transforms
 │   ├── evaluation.py          # Convergence, metrics, ROI computation
 │   ├── optimization.py        # Budget allocation optimizer
 │   ├── model_insights.py      # Adstock/saturation parameter extraction

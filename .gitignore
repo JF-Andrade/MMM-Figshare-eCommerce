@@ -23,7 +23,7 @@ dist/
 # --- Project Data ---
 data/
 mlruns/
-models/
+/models/
 reports/
 *.parquet
 *.parquet.crc
