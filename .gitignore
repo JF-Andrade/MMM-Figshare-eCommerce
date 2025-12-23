@@ -26,6 +26,7 @@ mlruns/
 /models/
 reports/
 docs/educational/
+notebooks/
 *.parquet
 *.parquet.crc
 *.csv
