@@ -24,7 +24,7 @@ import pytensor
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import from centralized modules
+# Centralized modules
 from src.config import (
     HOLDOUT_WEEKS,
     L_MAX,

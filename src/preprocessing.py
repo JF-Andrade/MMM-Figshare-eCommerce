@@ -460,8 +460,9 @@ def prepare_weekly_data(
             "META_INSTAGRAM_SPEND", "META_OTHER_SPEND", "TIKTOK_SPEND",
         ]
 
-    # Columns to aggregate
-    sum_cols = [c for c in spend_cols + [
+    # Columns to aggregate (spend + traffic + targets)
+    from src.config import TRAFFIC_COLS
+    sum_cols = [c for c in spend_cols + TRAFFIC_COLS + [
         target_col,
         "ALL_PURCHASES",
         "ALL_PURCHASES_ORIGINAL_PRICE",  # Include for alternative target

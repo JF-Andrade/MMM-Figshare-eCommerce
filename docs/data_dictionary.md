@@ -65,9 +65,10 @@ The pipeline generates several derived features to improve model signal.
 | **Rolling (7D)**        | 7-day rolling Std (volatility) for all spend channels.      |
 | **Share of Spend**      | `% of total daily spend` allocated to each channel.         |
 | **Customer Behavior**   | ~~Disabled: data leakage risk~~                             |
+| **Traffic (Non-Paid)**  | Direct, Branded, Organic, Email, Referral, Other clicks.    |
 | **Temporal**            | Holiday indicator, linear trend, and Q4 seasonality.        |
 | **Fourier Seasonality** | 2-term Fourier series (sin/cos) to capture yearly patterns. |
 | **Adstock**             | Geometric decay applied per territory (`l_max=12`).         |
 | **Saturation**          | Logistic transformation applied to adstocked spend.         |
 
-> Total features in the Hierarchical Model: **44**
+> Total features in the Hierarchical Model: **50**

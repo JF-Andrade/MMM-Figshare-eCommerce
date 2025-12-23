@@ -145,6 +145,16 @@ ROLLING_COLS = [f"{c}_ROLLING_7D_STD" for c in SPEND_COLS]
 
 SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
 
+# Non-paid traffic (exogenous demand indicators)
+TRAFFIC_COLS = [
+    "DIRECT_CLICKS",
+    "BRANDED_SEARCH_CLICKS",
+    "ORGANIC_SEARCH_CLICKS",
+    "EMAIL_CLICKS",
+    "REFERRAL_CLICKS",
+    "ALL_OTHER_CLICKS",
+]
+
 # Customer metrics disabled: data leakage (derived from target/outcome variables)
 # Original: ["AVG_ORDER_VALUE", "UNITS_PER_ORDER", "NEW_CUSTOMER_RATIO", "DISCOUNT_RATE"]
 CUSTOMER_COLS: list[str] = []
@@ -153,7 +163,7 @@ SEASON_COLS = ["sin_1", "cos_1", "sin_2", "cos_2"]
 
 ALL_FEATURES = (
     SPEND_COLS + CONTROL_COLS + CTR_COLS + CPC_COLS + 
-    ROLLING_COLS + SHARE_COLS + CUSTOMER_COLS + SEASON_COLS
+    ROLLING_COLS + SHARE_COLS + TRAFFIC_COLS + CUSTOMER_COLS + SEASON_COLS
 )
 
 # =============================================================================
