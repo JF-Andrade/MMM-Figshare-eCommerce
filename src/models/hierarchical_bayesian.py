@@ -53,36 +53,67 @@ def setup_gpu() -> bool:
 def geometric_adstock_pytensor(
     x: pt.TensorVariable,
     alpha: pt.TensorVariable,
+    territory_idx: pt.TensorVariable,
     l_max: int,
 ) -> pt.TensorVariable:
     """
-    Apply geometric adstock transformation using PyTensor scan.
+    Apply geometric adstock transformation using PyTensor scan, respecting territory boundaries.
     
     Adstock models the carryover effect of advertising:
     adstock[t] = x[t] + alpha * adstock[t-1]
     
+    CRITICAL: Resets adstock to 0 when territory_idx changes to prevent data leakage 
+    between regions in the concatenated time series.
+    
     Args:
         x: Spend tensor (n_obs, n_channels)
-        alpha: Decay rate per channel (n_channels,)
-        l_max: Maximum lag (not used in geometric, kept for API consistency)
+        alpha: Decay rate tensor (n_obs, n_channels) - already projected to observations
+        territory_idx: Territory index for each observation (n_obs,)
+        l_max: Maximum lag (unused in geometric, kept for API consistency)
     
     Returns:
         Adstocked tensor (n_obs, n_channels)
     """
-    def step(x_t, adstock_prev, alpha):
-        return x_t + alpha * adstock_prev
+    def step(x_t, territory_t, adstock_prev, territory_prev, alpha_t):
+        # If territory changes, previous adstock contributes 0 to current step
+        # We use a soft switch or multiplication mask
+        # Since territory indices are integers, we check equality
+        
+        # 1.0 if same territory, 0.0 if different
+        is_same = pt.eq(territory_t, territory_prev)
+        
+        # Calculate carryover
+        carryover = alpha_t * adstock_prev
+        
+        # Apply mask: if different territory, carryover becomes 0
+        qs = pt.switch(is_same, carryover, 0.0)
+        
+        return x_t + qs, territory_t
     
-    # Initialize with zeros
-    init = pt.zeros_like(x[0])
+    # Initialize
+    init_adstock = pt.zeros_like(x[0])
+    
+    # We need to pass territory_idx shifted by 1 to align "prev" in scan
+    # But standard scan passes output_prev.
+    # We will output (adstock_curr, territory_curr) to track state.
+    
+    # Initial state: adstock=zeros, territory_idx=-1 (impossible index)
+    # Cast to matches territory_idx dtype (usually int32 or int64)
+    init_territory = pt.as_tensor(-1, dtype="int32")
+    
+    # Scan sequences: x and territory_idx and alpha (if time-varying, but here alpha is usually static per group)
+    # If alpha is (n_obs, n_channels), we include it in sequences.
     
     result, _ = pytensor.scan(
         fn=step,
-        sequences=[x],
-        outputs_info=[init],
-        non_sequences=[alpha],
+        sequences=[x, territory_idx, alpha],
+        outputs_info=[init_adstock, init_territory],
+        strict=True,
     )
     
-    return result
+    # Result is a tuple (adstock_trace, territory_trace)
+    # We only want adstock_trace
+    return result[0]
 
 
 def hill_saturation_pytensor(
@@ -224,7 +255,17 @@ def build_hierarchical_mmm(
             dims=("territory", "channel"),
         )
         
-        X_adstock = geometric_adstock_pytensor(X_spend_data, alpha_channel, l_max)
+        # PROJECT alpha to observation level
+        # (n_obs, n_channels)
+        alpha_obs = alpha_territory[territory_idx_data]
+        
+        # CORRECTED: Adstock with territory-awareness
+        X_adstock = geometric_adstock_pytensor(
+            x=X_spend_data,
+            alpha=alpha_obs,
+            territory_idx=territory_idx_data,
+            l_max=l_max
+        )
         
         # ============================================
         # BAYESIAN SATURATION (Learned L, k)
@@ -257,7 +298,15 @@ def build_hierarchical_mmm(
             dims=("territory", "channel"),
         )
         
-        X_saturated = hill_saturation_pytensor(X_adstock, L_channel, k_channel)
+        # PROJECT L to observation level
+        L_obs = L_territory[territory_idx_data]
+        
+        # NOTE: k (shape parameter) is keeping as pooled/global for stability, 
+        # unless specifically asked to be hierarchical. 
+        # But L (scale) varies by territory.
+        
+        # CORRECTED: Use territory-specific L
+        X_saturated = hill_saturation_pytensor(X_adstock, L_obs, k_channel)
         
         # ============================================
         # HIERARCHICAL INTERCEPTS (3 levels)

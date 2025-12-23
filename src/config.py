@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 # =============================================================================
-# PATHS
+# 1. GLOBAL CONSTANTS
+# =============================================================================
+
+SEED = 1991
+
+# =============================================================================
+# 2. INFRASTRUCTURE & PATHS
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -27,90 +33,14 @@ DATA_FILENAME = "conjura_mmm_data.csv"
 PROCESSED_FILENAME = "mmm_data.parquet"
 
 # =============================================================================
-# GENERAL MODEL SETTINGS
+# 3. DATA SCHEMA
 # =============================================================================
 
-SEED = 1991
-HOLDOUT_WEEKS = 12
-MIN_SPEND_THRESHOLD = 0.05
-MIN_NONZERO_RATIO = 0.20
+# Target Variable
+TARGET_COL = "ALL_PURCHASES_ORIGINAL_PRICE"
+DATE_COL = "week"
 
-# Cross-validation
-CV_ENABLED = True
-CV_MODE = "full"  # "full" = K independent training runs
-CV_FOLDS = 3
-CV_MIN_TRAIN_WEEKS = 52  # Minimum training weeks for first fold
-CV_TEST_WEEKS = 12  # Fixed test window per fold
-CV_SAVE_INTERMEDIATE = True  # Save idata per fold to disk
-CV_CHECKPOINT_DIR = MODELS_DIR / "cv_checkpoints"
-CV_RESUME_FROM_FOLD = 0  # Set > 0 to resume interrupted CV
-
-# Regional defaults
-DEFAULT_CURRENCY = "GBP"
-TARGET_TERRITORY = "UK"
-
-# Seasonality
-YEARLY_SEASONALITY = 2
-
-# =============================================================================
-# MCMC SAMPLING
-# =============================================================================
-
-MCMC_CHAINS = 4
-MCMC_DRAWS = 2000
-MCMC_TUNE = 1000
-MCMC_TARGET_ACCEPT = 0.85
-MCMC_MAX_TREEDEPTH = 18
-
-# =============================================================================
-# BAYESIAN MODEL PRIORS (Hierarchical)
-# =============================================================================
-
-# --- Adstock ---
-L_MAX = 12  # Maximum lag weeks
-PRIOR_ADSTOCK_ALPHA = 2  # Beta(alpha, beta) for decay rate
-PRIOR_ADSTOCK_BETA = 2
-PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.1  # Regional variation in adstock
-
-# --- Saturation (Hill Function) ---
-PRIOR_SATURATION_L_SIGMA = 1.0  # HalfNormal sigma for L (half-saturation)
-PRIOR_SATURATION_K_ALPHA = 2  # Gamma(alpha, beta) for k (steepness)
-PRIOR_SATURATION_K_BETA = 1
-PRIOR_SIGMA_SATURATION_TERRITORY = 0.1  # Regional variation in L
-
-# --- Hierarchical Intercepts ---
-PRIOR_SIGMA_CURRENCY = 0.5  # Variation between currencies
-PRIOR_SIGMA_TERRITORY = 0.3  # Variation between territories within currency
-
-# --- Channel Effects ---
-PRIOR_BETA_CHANNEL_SIGMA = 0.5  # HalfNormal sigma for channel betas
-PRIOR_SIGMA_BETA_TERRITORY = 0.05  # Regional variation in channel effects
-
-# --- Horseshoe Regularization (Features) ---
-PRIOR_HORSESHOE_TAU_BETA = 1  # HalfCauchy beta for global shrinkage
-PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
-
-# --- Seasonality ---
-PRIOR_GAMMA_SEASON_SIGMA = 0.3  # Normal sigma for seasonality
-
-# --- Likelihood ---
-PRIOR_SIGMA_OBS = 0.5  # HalfNormal sigma for observation noise
-USE_STUDENT_T = True  # Use robust Student-T likelihood
-PRIOR_NU_ALPHA = 2  # Gamma(alpha, beta) for degrees of freedom
-PRIOR_NU_BETA = 0.1
-
-# =============================================================================
-# RIDGE BASELINE (Frequentist)
-# =============================================================================
-
-RIDGE_ALPHAS = [0.01, 0.1, 1.0, 10.0, 100.0]
-BASELINE_ADSTOCK_DECAY = 0.5
-BASELINE_SATURATION_HALF = 0.5
-
-# =============================================================================
-# COLUMN DEFINITIONS
-# =============================================================================
-
+# Spend Channels
 SPEND_COLS = [
     "GOOGLE_PAID_SEARCH_SPEND",
     "GOOGLE_SHOPPING_SPEND",
@@ -123,11 +53,27 @@ SPEND_COLS = [
     "TIKTOK_SPEND",
 ]
 
-TARGET_COL = "ALL_PURCHASES_ORIGINAL_PRICE"
-DATE_COL = "week"
+# Share Columns (from Spend)
+SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
 
+# Control Variables
 CONTROL_COLS = ["trend", "is_holiday", "month", "week_of_year", "quarter", "is_q4"]
 
+# Seasonality Terms (Fourier)
+SEASON_COLS = ["sin_1", "cos_1", "sin_2", "cos_2"]
+
+# Non-paid Traffic (Exogenous Demand)
+TRAFFIC_COLS = [
+    "DIRECT_CLICKS",
+    "BRANDED_SEARCH_CLICKS",
+    "ORGANIC_SEARCH_CLICKS",
+    "EMAIL_CLICKS",
+    "REFERRAL_CLICKS",
+    "ALL_OTHER_CLICKS",
+]
+
+# NOTE: The following feature sets are defined but excluded from the final model 
+# to avoid endogeneity (CTR, CPC) or data leakage (Customer metrics).
 CTR_COLS = [
     "GOOGLE_PAID_SEARCH_CTR", "GOOGLE_SHOPPING_CTR", "GOOGLE_PMAX_CTR",
     "GOOGLE_DISPLAY_CTR", "GOOGLE_VIDEO_CTR", "META_FACEBOOK_CTR",
@@ -140,43 +86,105 @@ CPC_COLS = [
     "META_INSTAGRAM_CPC", "META_OTHER_CPC", "TIKTOK_CPC"
 ]
 
-# Rolling Mean removed: redundant with Bayesian adstock (r=0.90 correlation)
-ROLLING_COLS = [f"{c}_ROLLING_7D_STD" for c in SPEND_COLS]
-
-SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
-
-# Non-paid traffic (exogenous demand indicators)
-TRAFFIC_COLS = [
-    "DIRECT_CLICKS",
-    "BRANDED_SEARCH_CLICKS",
-    "ORGANIC_SEARCH_CLICKS",
-    "EMAIL_CLICKS",
-    "REFERRAL_CLICKS",
-    "ALL_OTHER_CLICKS",
-]
-
-# Customer metrics disabled: data leakage (derived from target/outcome variables)
-# Original: ["AVG_ORDER_VALUE", "UNITS_PER_ORDER", "NEW_CUSTOMER_RATIO", "DISCOUNT_RATE"]
-CUSTOMER_COLS: list[str] = []
-
-SEASON_COLS = ["sin_1", "cos_1", "sin_2", "cos_2"]
-
+# Final Feature Set for Modeling
 ALL_FEATURES = (
-    SPEND_COLS + CONTROL_COLS + CTR_COLS + CPC_COLS + 
-    ROLLING_COLS + SHARE_COLS + TRAFFIC_COLS + CUSTOMER_COLS + SEASON_COLS
+    SPEND_COLS + SHARE_COLS + TRAFFIC_COLS + 
+    CONTROL_COLS + SEASON_COLS
 )
 
+# Regional defaults (baseline model)
+DEFAULT_CURRENCY = "GBP"
+TARGET_TERRITORY = "UK"
+
 # =============================================================================
-# MLFLOW
+# 4. PREPROCESSING & QUALITY
+# =============================================================================
+
+# Data Quality Filters
+MIN_SPEND_THRESHOLD = 0.05
+MIN_NONZERO_RATIO = 0.20
+
+# Feature Engineering Settings
+YEARLY_SEASONALITY = 2  # Number of Fourier terms
+
+# =============================================================================
+# 5. VALIDATION STRATEGY
+# =============================================================================
+
+HOLDOUT_WEEKS = 12
+
+# 3 Fold Cross-Validation Configuration
+CV_ENABLED = True
+CV_MODE = "full"       # "full" = K independent training runs
+CV_FOLDS = 3
+CV_MIN_TRAIN_WEEKS = 52  # Minimum training weeks for first fold
+CV_TEST_WEEKS = 12       # Fixed test window per fold
+CV_SAVE_INTERMEDIATE = True  # Save idata per fold to disk
+CV_CHECKPOINT_DIR = MODELS_DIR / "cv_checkpoints"
+CV_RESUME_FROM_FOLD = 0  # Set > 0 to resume interrupted CV
+
+# =============================================================================
+# 6. BAYESIAN MODEL CONFIGURATION (Hierarchical)
+# =============================================================================
+
+# --- MCMC Settings ---
+MCMC_CHAINS = 2
+MCMC_DRAWS = 50
+MCMC_TUNE = 50
+MCMC_TARGET_ACCEPT = 0.85
+MCMC_MAX_TREEDEPTH = 18
+
+# --- Priors: Adstock (Geometric) ---
+L_MAX = 12                     # Maximum lag weeks
+PRIOR_ADSTOCK_ALPHA = 2        # Beta(alpha, beta) for decay rate
+PRIOR_ADSTOCK_BETA = 2
+PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.1  # Regional variation in adstock
+
+# --- Priors: Saturation (Hill Function) ---
+PRIOR_SATURATION_L_SIGMA = 1.0       # HalfNormal sigma for L (half-saturation)
+PRIOR_SATURATION_K_ALPHA = 2         # Gamma(alpha, beta) for k (steepness)
+PRIOR_SATURATION_K_BETA = 1
+PRIOR_SIGMA_SATURATION_TERRITORY = 0.1 # Regional variation in L
+
+# --- Priors: Hierarchical Intercepts ---
+PRIOR_SIGMA_CURRENCY = 0.5   # Variation between currencies
+PRIOR_SIGMA_TERRITORY = 0.3  # Variation between territories within currency
+
+# --- Priors: Channel Effects ---
+PRIOR_BETA_CHANNEL_SIGMA = 0.5     # HalfNormal sigma for channel betas
+PRIOR_SIGMA_BETA_TERRITORY = 0.05  # Regional variation in channel effects
+
+# --- Priors: Feature Effects (Horseshoe Regularization) ---
+PRIOR_HORSESHOE_TAU_BETA = 1     # HalfCauchy beta for global shrinkage
+PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
+
+# --- Priors: Seasonality ---
+PRIOR_GAMMA_SEASON_SIGMA = 0.3   # Normal sigma for seasonality
+
+# --- Priors: Likelihood (Student-T) ---
+PRIOR_SIGMA_OBS = 0.5  # HalfNormal sigma for observation noise
+USE_STUDENT_T = True   # Use robust Student-T likelihood
+PRIOR_NU_ALPHA = 2     # Gamma(alpha, beta) for degrees of freedom
+PRIOR_NU_BETA = 0.1
+
+# =============================================================================
+# 7. BASELINE MODEL CONFIGURATION (freq. Ridge)
+# =============================================================================
+
+RIDGE_ALPHAS = [0.1, 1, 5, 10, 25, 40, 45, 50, 100, 500]
+BASELINE_ADSTOCK_DECAY = [0.1, 0.3, 0.5, 0.7, 0.9]
+BASELINE_SATURATION_HALF = [0.1, 0.3, 0.5, 0.7]
+
+# =============================================================================
+# 8. EXPERIMENT TRACKING (MLflow)
 # =============================================================================
 
 MLFLOW_TRACKING_URI = (PROJECT_ROOT / "mlruns").as_uri()
 MLFLOW_EXPERIMENT_NAME = "MMM-Experiments"
 
 # =============================================================================
-# UTILITIES
+# 9. UTILITIES & CONFIG CLASS
 # =============================================================================
-
 
 def get_git_hash() -> str:
     """Get current git commit hash."""
@@ -197,11 +205,6 @@ def generate_run_id() -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     short_uuid = str(uuid.uuid4())[:8]
     return f"{timestamp}_{short_uuid}"
-
-
-# =============================================================================
-# PIPELINE CONFIGURATION
-# =============================================================================
 
 
 @dataclass

@@ -48,11 +48,7 @@ from src.config import (
     CV_CHECKPOINT_DIR,
     CV_RESUME_FROM_FOLD,
     ALL_FEATURES,
-    CTR_COLS,
-    CPC_COLS,
-    ROLLING_COLS,
     SHARE_COLS,
-    CUSTOMER_COLS,
     SEASON_COLS,
 )
 from src.data_loader import get_valid_regions, load_data
@@ -208,14 +204,35 @@ def prepare_model_data(
     df_train = df.loc[train_indices].copy()
     df_test = df.loc[test_indices].copy()
 
+    # Scale features and seasonality (StandardScaler)
+    # This helps NUTS sampler convergence
+    from sklearn.preprocessing import StandardScaler
+    
+    scaler_features = StandardScaler()
+    scaler_season = StandardScaler()
+    
+    # Fit on train, transform both
+    if train_indices and len(train_indices) > 0:
+        X_features_train = scaler_features.fit_transform(df_train[other_feature_cols].fillna(0).values)
+        X_season_train = scaler_season.fit_transform(df_train[season_cols].fillna(0).values)
+        
+        X_features_test = scaler_features.transform(df_test[other_feature_cols].fillna(0).values)
+        X_season_test = scaler_season.transform(df_test[season_cols].fillna(0).values)
+    else:
+        # Fallback if no train indices (should not happen in proper flow)
+        X_features_train = df_train[other_feature_cols].fillna(0).values
+        X_season_train = df_train[season_cols].fillna(0).values
+        X_features_test = df_test[other_feature_cols].fillna(0).values
+        X_season_test = df_test[season_cols].fillna(0).values
+
     # Prepare Dictionary for Model Fitting
     model_data = {
         "X_spend_train": np.ascontiguousarray(df_train[spend_norm_cols].fillna(0).values).astype(np.float64),
         "X_spend_test": np.ascontiguousarray(df_test[spend_norm_cols].fillna(0).values).astype(np.float64),
-        "X_features_train": np.ascontiguousarray(df_train[other_feature_cols].fillna(0).values).astype(np.float64),
-        "X_features_test": np.ascontiguousarray(df_test[other_feature_cols].fillna(0).values).astype(np.float64),
-        "X_season_train": np.ascontiguousarray(df_train[season_cols].fillna(0).values).astype(np.float64),
-        "X_season_test": np.ascontiguousarray(df_test[season_cols].fillna(0).values).astype(np.float64),
+        "X_features_train": np.ascontiguousarray(X_features_train).astype(np.float64),
+        "X_features_test": np.ascontiguousarray(X_features_test).astype(np.float64),
+        "X_season_train": np.ascontiguousarray(X_season_train).astype(np.float64),
+        "X_season_test": np.ascontiguousarray(X_season_test).astype(np.float64),
         "y_train": np.ascontiguousarray(df_train["y_log"].fillna(0).values).astype(np.float64),
         "y_test": np.ascontiguousarray(df_test["y_log"].fillna(0).values).astype(np.float64),
         "y_train_original": np.ascontiguousarray(df_train[TARGET_COL].fillna(0).values).astype(np.float64),
@@ -792,8 +809,8 @@ def run_hierarchical(
             metrics=combined_metrics,
             roi_df=contrib_df.assign(
                 region="Global",
-                spend=contrib_df["total_spend_saturated"],
-                roi=contrib_df["contribution"] / (contrib_df["total_spend_saturated"] + 1e-8)
+                spend=contrib_df["total_spend"],
+                roi=contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
             ),
             regions=regions,
             channels=m_data["channel_names"],

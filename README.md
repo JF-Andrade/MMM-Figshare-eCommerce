@@ -117,7 +117,6 @@ All features are centralized in `src/config.py`.
 | **CONTROL** | 6     | `trend`, `is_holiday`, `month`, `week_of_year`, `quarter`, `is_q4`                                                                                                                                        |
 | **CTR**     | 7     | `GOOGLE_PAID_SEARCH_CTR`, `GOOGLE_SHOPPING_CTR`, `GOOGLE_PMAX_CTR`, `GOOGLE_DISPLAY_CTR`, `GOOGLE_VIDEO_CTR`, `META_FACEBOOK_CTR`, `META_INSTAGRAM_CTR`                                                   |
 | **CPC**     | 9     | `GOOGLE_PAID_SEARCH_CPC`, `GOOGLE_SHOPPING_CPC`, `GOOGLE_PMAX_CPC`, `GOOGLE_DISPLAY_CPC`, `GOOGLE_VIDEO_CPC`, `META_FACEBOOK_CPC`, `META_INSTAGRAM_CPC`, `META_OTHER_CPC`, `TIKTOK_CPC`                   |
-| **ROLLING** | 9     | `{CHANNEL}_ROLLING_7D_STD` for each spend channel                                                                                                                                                         |
 | **SHARE**   | 9     | `{CHANNEL}_SHARE` for each spend channel                                                                                                                                                                  |
 | **TRAFFIC** | 6     | `DIRECT_CLICKS`, `BRANDED_SEARCH_CLICKS`, `ORGANIC_SEARCH_CLICKS`, `EMAIL_CLICKS`, `REFERRAL_CLICKS`, `ALL_OTHER_CLICKS`                                                                                  |
 | **SEASON**  | 4     | `sin_1`, `cos_1`, `sin_2`, `cos_2` (Fourier terms)                                                                                                                                                        |
@@ -131,10 +130,10 @@ All features are centralized in `src/config.py`.
 
 ### Region Usage
 
-| Model              | Regions   | Selection Criteria                |
-| ------------------ | --------- | --------------------------------- |
-| **Ridge Baseline** | UK only   | Filtered to GBP currency          |
-| **Hierarchical**   | All valid | All currencies, ≥52 weeks of data |
+| Model              | Regions   | Selection Criteria                                              |
+| ------------------ | --------- | --------------------------------------------------------------- |
+| **Ridge Baseline** | UK only   | Grid Search over Adstock/Saturation + TimeSeriesSplit (5 folds) |
+| **Hierarchical**   | All valid | All currencies, ≥52 weeks of data                               |
 
 > Use `--max-regions N` flag to limit hierarchical model to top N regions by revenue.
 
@@ -209,7 +208,9 @@ All priors are externalized to `src/config.py` for easy tuning.
 - **Temporal Holdout**: Last 12 weeks held out for validation
 - **Convergence Diagnostics**: R-hat < 1.01 (optimized via high `target_accept` and `max_treedepth`), ESS > 400, Zero divergences.
 - **Metrics**: R², MAE, MAPE
-- **Expanding Window CV**: Module available in `src/validation.py`
+- **Cross-Validation**:
+  - **Ridge Baseline**: `TimeSeriesSplit` (5 folds) preventing data leakage.
+  - **Hierarchical**: Expanding window CV (Module available in `src/validation.py`).
 
 ---
 
@@ -362,29 +363,12 @@ After execution, results are saved to `models/`:
 
 ---
 
-## Future Work
-
-- [x] ~~Cross-validation with multiple temporal splits~~ (Expanding Window CV)
-- [x] ~~Explicit prior distributions~~ (Prior class implemented)
-- [x] ~~Modular src/ architecture~~ (data_loader, model, evaluation, optimization)
-- [x] ~~Test suite~~ (pytest tests for all modules)
-- [x] ~~Budget optimization module~~ (src/optimization.py)
-- [x] ~~Ridge Regression baseline~~ (frequentist comparison)
-- [x] ~~Interactive Streamlit dashboard~~ (6 pages implemented)
-- [x] ~~Model comparison page~~ (baseline vs hierarchical)
-- [x] ~~Project value estimation~~ (ROI calculation)
-- [ ] Tune priors based on domain knowledge
-- [ ] Add interaction effects between channels
-- [ ] Improve model R² with additional features
-
----
-
 ## Author
 
 **Jordao Fernandes de Andrade**
 
 - Email: <jordaoandrade@gmail.com>
-- LinkedIn: [linkedin.com/in/jordaoandrade](https://linkedin.com/in/jordaoandrade)
+- LinkedIn: [linkedin.com/in/jordaofernandes](https://www.linkedin.com/in/jordaofernandes/)
 
 ---
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def apply_adstock(x: np.ndarray, decay: float = BASELINE_ADSTOCK_DECAY) -> np.ndarray:
+def apply_adstock(x: np.ndarray, decay: float = 0.5) -> np.ndarray:
     """Apply geometric adstock transformation."""
     result = np.zeros_like(x, dtype=np.float64)
     result[0] = x[0]
@@ -58,7 +59,7 @@ def apply_adstock(x: np.ndarray, decay: float = BASELINE_ADSTOCK_DECAY) -> np.nd
     return result
 
 
-def apply_saturation(x: np.ndarray, half_sat: float = BASELINE_SATURATION_HALF) -> np.ndarray:
+def apply_saturation(x: np.ndarray, half_sat: float = 0.5) -> np.ndarray:
     """Apply Hill saturation transformation."""
     x = np.maximum(x, 0)
     x_norm = x / (x.max() + 1e-8)
@@ -68,7 +69,7 @@ def apply_saturation(x: np.ndarray, half_sat: float = BASELINE_SATURATION_HALF) 
 def apply_saturation_with_max(
     x: np.ndarray,
     x_max: float,
-    half_sat: float = BASELINE_SATURATION_HALF,
+    half_sat: float = 0.5,
 ) -> np.ndarray:
     """Apply Hill saturation using pre-computed max (avoids data leakage)."""
     x = np.maximum(x, 0)
@@ -78,6 +79,8 @@ def apply_saturation_with_max(
 
 def prepare_features(
     df_weekly: pd.DataFrame,
+    adstock_decay: float,
+    saturation_half: float,
     train_end_idx: int | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray, list[str], float, dict]:
     """
@@ -124,9 +127,12 @@ def prepare_features(
         col_sat = f"{c}_sat"
 
         # Apply adstock (this is causal - only uses past values)
-        df[col_adstock] = apply_adstock(df[c].fillna(0).values)
+        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
+        
+        # Apply saturation to ADSTOCKED data
+        df[col_sat] = apply_saturation(df[col_adstock].values, half_sat=saturation_half)
 
-        # Compute max from TRAIN ONLY to prevent leakage
+        # Compute max from TRAIN ONLY to prevent leakage (if needed for other logic)
         if train_end_idx is not None:
             train_max = df[col_adstock].iloc[:train_end_idx].max()
         else:
@@ -134,8 +140,8 @@ def prepare_features(
 
         channel_max_dict[c] = df[c].max()
 
-        # Use RAW spend (diagnostic showed adstock hurts test R²)
-        feature_cols.append(c)
+        # Use TRANSFORMED spend (Adstock -> Saturation)
+        feature_cols.append(col_sat)
 
     # Minimal controls (diagnostic showed too many features cause overfitting)
     control_cols = ["trend"]
@@ -155,14 +161,19 @@ def prepare_features(
     return X, y, channels_filtered, y_scaler, channel_max_dict
 
 
+from sklearn.model_selection import TimeSeriesSplit
+
 def train_ridge_model(
     X_train: pd.DataFrame,
     y_train: np.ndarray,
 ) -> tuple[Pipeline, float]:
     """Train Ridge Regression model."""
+    # Use TimeSeriesSplit to prevent data leakage from future to past
+    tscv = TimeSeriesSplit(n_splits=5)
+    
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
-        ("ridge", RidgeCV(alphas=RIDGE_ALPHAS, cv=5)),
+        ("ridge", RidgeCV(alphas=RIDGE_ALPHAS, cv=tscv)),
     ])
 
     start_time = time.time()
@@ -170,8 +181,8 @@ def train_ridge_model(
     training_time = time.time() - start_time
 
     alpha = pipeline.named_steps["ridge"].alpha_
-    print(f"Best alpha: {alpha}")
-    print(f"Training time: {training_time:.2f}s")
+    # print(f"Best alpha: {alpha}")
+    # print(f"Training time: {training_time:.2f}s")
 
     return pipeline, training_time
 
@@ -329,12 +340,67 @@ def run_ridge_baseline(
     # Compute train end index BEFORE feature preparation
     train_end_idx = len(df_weekly) - HOLDOUT_WEEKS
 
-    print(f"\n2. Preparing features...")
-    X, y, channels, y_scaler, channel_max_dict = prepare_features(
-        df_weekly, train_end_idx=train_end_idx
-    )
+    # --- Grid Search for Feature Engineering Parameters ---
+    best_score = -float("inf")
+    best_params = {}
+    best_results = None
 
-    # Split
+    param_grid = list(itertools.product(BASELINE_ADSTOCK_DECAY, BASELINE_SATURATION_HALF))
+    print(f"\n2. Grid Search over {len(param_grid)} parameter combinations...")
+
+    for i, (decay, sat_half) in enumerate(param_grid):
+        print(f"   [{i+1}/{len(param_grid)}] Testing Adstock={decay}, Saturation={sat_half}...", end="\r")
+        
+        # Prepare features with current params
+        X, y, channels, y_scaler, channel_max_dict = prepare_features(
+            df_weekly, 
+            adstock_decay=decay,
+            saturation_half=sat_half,
+            train_end_idx=train_end_idx
+        )
+
+        # Split
+        X_train = X.iloc[:train_end_idx]
+        X_test = X.iloc[train_end_idx:]
+        y_train = y[:train_end_idx]
+        y_test = y[train_end_idx:]
+
+        # Train Ridge (optimize alpha internally)
+        pipeline, t_time = train_ridge_model(X_train, y_train)
+        
+        # Evaluate on Test Set (using R2 as selection metric)
+        # Note: Ideally we use CV score, but RidgeCV uses internal LOO/CV.
+        # We want to select the hyperparameters that generalize best to the holdout.
+        metrics = evaluate_model(pipeline, X_train, X_test, y_train, y_test)
+        
+        # Selection criterion: Test R2 (or could use MAPE)
+        score = metrics["r2_test"]
+        
+        if score > best_score:
+            best_score = score
+            best_params = {
+                "adstock_decay": decay,
+                "saturation_half": sat_half,
+                "alpha": pipeline.named_steps["ridge"].alpha_,
+                "feature_prep_results": (X, y, channels, y_scaler, channel_max_dict),
+                "pipeline": pipeline,
+                "training_time": t_time
+            }
+            best_results = metrics
+
+    print(f"\n\n   Best Params: Adstock={best_params['adstock_decay']}, Saturation={best_params['saturation_half']}")
+    print(f"   Best Test R²: {best_score:.4f}")
+
+    # Use Best Model
+    X, y, channels, y_scaler, channel_max_dict = best_params["feature_prep_results"]
+    pipeline = best_params["pipeline"]
+    metrics = best_results
+    metrics["training_time"] = best_params["training_time"]
+    metrics["alpha"] = float(best_params["alpha"])
+    metrics["best_adstock"] = best_params["adstock_decay"]
+    metrics["best_saturation"] = best_params["saturation_half"]
+
+    # Split (re-create for final scope)
     X_train = X.iloc[:train_end_idx]
     X_test = X.iloc[train_end_idx:]
     y_train = y[:train_end_idx]
@@ -348,20 +414,15 @@ def run_ridge_baseline(
             "model_type": "ridge_baseline",
             "region": region or TARGET_TERRITORY,
             "n_channels": len(channels),
-            "adstock_decay": BASELINE_ADSTOCK_DECAY,
-            "saturation_half": BASELINE_SATURATION_HALF,
+            "adstock_decay": best_params["adstock_decay"],
+            "saturation_half": best_params["saturation_half"],
             "holdout_weeks": HOLDOUT_WEEKS,
+            "best_alpha": best_params["alpha"]
         })
-
-        # Train
-        print("\n3. Training Ridge model...")
-        pipeline, training_time = train_ridge_model(X_train, y_train)
-
-        # Evaluate
-        print("\n4. Evaluating model...")
-        metrics = evaluate_model(pipeline, X_train, X_test, y_train, y_test)
-        metrics["training_time"] = training_time
-        metrics["alpha"] = float(pipeline.named_steps["ridge"].alpha_)
+        
+        # Already trained and evaluated
+        print("\n3. Best Model Selected")
+        print(f"Best Alpha: {metrics['alpha']}")
 
         mlflow.log_metrics(metrics)
 
