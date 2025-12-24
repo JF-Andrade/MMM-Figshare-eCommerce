@@ -40,9 +40,9 @@ dependencies = [
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
     # Acceleration
-    "jax>=0.4.0",
-    "jaxlib>=0.4.0",
-    "numpyro>=0.13.0",
+    "jax==0.4.23",
+    "jaxlib==0.4.23",
+    "numpyro==0.13.2",
 ]
 
 dev = [

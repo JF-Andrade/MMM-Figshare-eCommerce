@@ -38,9 +38,9 @@ dependencies:
   # Time Series
   - statsmodels>=0.14.0
   - holidays>=0.40
-  - jax
-  - jaxlib
-  - numpyro
+  - jax==0.4.23
+  - jaxlib==0.4.23
+  - numpyro==0.13.2
 
   # Notebooks
   - jupyter>=1.0.0
