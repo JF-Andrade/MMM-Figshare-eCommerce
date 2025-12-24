@@ -1,0 +1,30 @@
+# MMM Project Module Scopes
+
+## src/ Modules
+
+| Module             | Scope / Purpose                                           |
+| ------------------ | --------------------------------------------------------- |
+| `config.py`        | Constants, hyperparameters, PipelineConfig dataclass      |
+| `data_loader.py`   | Load raw data, currency filtering, data validation        |
+| `preprocessing.py` | Data transforms, feature engineering, adstock, saturation |
+| `validation.py`    | Train/test splits respecting time series                  |
+| `evaluation.py`    | Metrics calculation, convergence diagnostics, ROI         |
+| `insights.py`      | Parameter extraction, visualizations, budget optimization |
+| `schemas.py`       | Pydantic models for deliverables                          |
+| `comparison.py`    | Compare baseline vs hierarchical model                    |
+| `pipeline.py`      | Orchestration, retry logic, state management              |
+
+## scripts/
+
+| Script                | Scope / Purpose                              |
+| --------------------- | -------------------------------------------- |
+| `run_pipeline.py`     | CLI entry point, orchestrates full pipeline  |
+| `mmm_baseline.py`     | Baseline model training + MLflow logging     |
+| `mmm_hierarchical.py` | Hierarchical model training + MLflow logging |
+
+**Rule:** Scripts should only contain:
+
+- Entry point function (`run_*`)
+- CLI argument parsing
+- MLflow tracking/logging calls
+- Calls to `src/` modules (no business logic)

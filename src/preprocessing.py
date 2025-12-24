@@ -62,6 +62,7 @@ def filter_low_variance_channels(
     df: pd.DataFrame,
     spend_cols: list[str],
     min_nonzero_ratio: float = 0.20,
+    verbose: bool = True,
 ) -> list[str]:
     """
     Filter out channels with insufficient variance (too many zeros).
@@ -70,6 +71,7 @@ def filter_low_variance_channels(
         df: DataFrame with spend columns.
         spend_cols: List of spend column names to evaluate.
         min_nonzero_ratio: Minimum ratio of non-zero values (default 0.20).
+        verbose: Print filtering info.
 
     Returns:
         List of channel names that pass the variance filter.
@@ -81,7 +83,7 @@ def filter_low_variance_channels(
         nonzero_ratio = (df[col] > 0).sum() / len(df)
         if nonzero_ratio >= min_nonzero_ratio:
             valid_channels.append(col)
-        else:
+        elif verbose:
             print(f"Filtering {col}: {nonzero_ratio:.1%} non-zero (min: {min_nonzero_ratio:.0%})")
     return valid_channels
 
@@ -137,6 +139,36 @@ def apply_saturation(
     numerator = x_arr**slope
     denominator = half_saturation**slope + x_arr**slope
 
+    return numerator / denominator
+
+
+def apply_saturation_with_max(
+    x: NDArray[np.floating] | pd.Series,
+    x_max: float,
+    half_saturation: float,
+    slope: float = 1.0,
+) -> NDArray[np.floating]:
+    """
+    Apply Hill saturation using pre-computed max (avoids data leakage).
+    
+    Use for train/test splits where max should come from train only.
+    
+    Args:
+        x: Input values (typically adstocked spend).
+        x_max: Pre-computed maximum (from training data).
+        half_saturation: Point where response reaches 50% of max.
+        slope: Controls steepness of curve.
+    
+    Returns:
+        Saturated values between 0 and 1.
+    """
+    x_arr = np.asarray(x, dtype=np.float64)
+    x_arr = np.maximum(x_arr, 0)
+    x_norm = x_arr / (x_max + 1e-8)
+    
+    numerator = x_norm**slope
+    denominator = half_saturation**slope + x_norm**slope
+    
     return numerator / denominator
 
 
@@ -663,5 +695,191 @@ def add_fourier_seasonality(
     for k in range(1, n_terms + 1):
         df[f"sin_{k}"] = np.sin(2 * np.pi * k * week_of_year / 52)
         df[f"cos_{k}"] = np.cos(2 * np.pi * k * week_of_year / 52)
+    
+    return df
+
+
+# =============================================================================
+# BASELINE MODEL FEATURE PREPARATION
+# =============================================================================
+
+
+def prepare_baseline_features(
+    df_weekly: pd.DataFrame,
+    adstock_decay: float,
+    saturation_half: float,
+    spend_cols: list[str],
+    target_col: str,
+    min_nonzero_ratio: float = 0.20,
+    min_spend_threshold: float = 0.01,
+    train_end_idx: int | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, np.ndarray, list[str], float, dict]:
+    """
+    Prepare features with adstock and saturation transforms for baseline model.
+
+    Args:
+        df_weekly: Weekly aggregated DataFrame.
+        adstock_decay: Decay rate for adstock.
+        saturation_half: Half-saturation point.
+        spend_cols: List of spend column names.
+        target_col: Target column name.
+        min_nonzero_ratio: Minimum non-zero ratio for channels.
+        min_spend_threshold: Minimum spend share threshold.
+        train_end_idx: Index where training data ends (prevents leakage).
+        verbose: Print channel info.
+
+    Returns:
+        (X, y, channels, y_scaler, channel_max_dict)
+    """
+    df = df_weekly.copy()
+    channels = [c for c in spend_cols if c in df.columns]
+
+    channels = filter_low_variance_channels(df, channels, min_nonzero_ratio, verbose=verbose)
+
+    total_spend = sum(df[c].sum() for c in channels)
+    channels_filtered = []
+    other_spend = pd.Series(0.0, index=df.index)
+
+    for c in channels:
+        spend_share = df[c].sum() / total_spend
+        if spend_share >= min_spend_threshold:
+            channels_filtered.append(c)
+        else:
+            other_spend += df[c].fillna(0)
+
+    if other_spend.sum() > 0:
+        df["OTHER_SPEND"] = other_spend
+        channels_filtered.append("OTHER_SPEND")
+
+    if verbose:
+        print(f"Channels: {channels_filtered}")
+
+    feature_cols = []
+    channel_max_dict = {}
+
+    for c in channels_filtered:
+        col_adstock = f"{c}_adstock"
+        col_sat = f"{c}_sat"
+
+        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
+        
+        if train_end_idx is not None:
+            train_max = df[col_adstock].iloc[:train_end_idx].max()
+        else:
+            train_max = df[col_adstock].max()
+        
+        df[col_sat] = apply_saturation_with_max(
+            df[col_adstock].values, train_max, saturation_half
+        )
+
+        channel_max_dict[c] = train_max
+        feature_cols.append(col_sat)
+
+    control_cols = ["trend"]
+    if "is_holiday" in df.columns:
+        control_cols.append("is_holiday")
+
+    feature_cols.extend(control_cols)
+
+    X = df[feature_cols].fillna(0)
+
+    y = df[target_col].values
+    y_scaler = y.mean()
+    y = y / y_scaler
+
+    return X, y, channels_filtered, y_scaler, channel_max_dict
+
+
+# =============================================================================
+# FEATURE ENGINEERING
+# =============================================================================
+
+
+def compute_temporal_features(
+    df: pd.DataFrame,
+    date_col: str = "DATE_DAY",
+) -> pd.DataFrame:
+    """
+    Compute temporal features from date.
+
+    Args:
+        df: Input DataFrame.
+        date_col: Date column name.
+
+    Returns:
+        DataFrame with temporal features added.
+    """
+    df = df.copy()
+    
+    if date_col in df.columns:
+        date = pd.to_datetime(df[date_col])
+        df["DAY_OF_WEEK"] = date.dt.dayofweek / 6
+        df["QUARTER"] = date.dt.quarter / 4
+        df["WEEK_OF_YEAR"] = date.dt.isocalendar().week / 52
+    
+    return df
+
+
+def compute_spend_share(
+    df: pd.DataFrame,
+    spend_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Compute channel spend share (media mix).
+
+    Args:
+        df: Input DataFrame.
+        spend_cols: List of spend column names. If None, uses SPEND_COLS from config.
+
+    Returns:
+        DataFrame with _SHARE columns added.
+    """
+    from src.config import SPEND_COLS as DEFAULT_SPEND_COLS
+    
+    df = df.copy()
+    
+    if spend_cols is None:
+        spend_cols = DEFAULT_SPEND_COLS
+    
+    available_spend = [c for c in spend_cols if c in df.columns]
+    
+    if not available_spend:
+        return df
+    
+    total_spend = df[available_spend].sum(axis=1).replace(0, np.nan)
+    
+    for spend_col in available_spend:
+        share_col = spend_col.replace("_SPEND", "_SHARE")
+        df[share_col] = (df[spend_col] / total_spend).fillna(0)
+    
+    return df
+
+
+def engineer_features(
+    df: pd.DataFrame,
+    date_col: str = "DATE_DAY",
+    rolling_window: int = 7,
+) -> pd.DataFrame:
+    """
+    Apply all feature engineering transformations.
+
+    Features created:
+    - Temporal: day of week, quarter, week of year
+    - Share: channel spend share
+
+    Note: CTR/CPC features removed due to endogeneity.
+          Customer metrics removed due to data leakage risk.
+
+    Args:
+        df: Input DataFrame.
+        date_col: Date column name.
+        rolling_window: Window for rolling features (not currently used).
+
+    Returns:
+        DataFrame with engineered features.
+    """
+    df = compute_temporal_features(df, date_col)
+    df = compute_spend_share(df)
     
     return df

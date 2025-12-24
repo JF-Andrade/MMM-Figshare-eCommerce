@@ -2,6 +2,7 @@
 MMM Baseline Model - Ridge Regression.
 
 Simple frequentist baseline using sklearn Ridge Regression.
+Uses Bayesian optimization for hyperparameter tuning.
 Serves as comparison point for the Bayesian hierarchical model.
 """
 
@@ -10,7 +11,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,18 +18,22 @@ import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import RidgeCV
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_percentage_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from skopt import gp_minimize
+from skopt.space import Real
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import (
-    BASELINE_ADSTOCK_DECAY,
-    BASELINE_SATURATION_HALF,
+    BAYESIAN_ADSTOCK_BOUNDS,
+    BAYESIAN_ALPHA_BOUNDS,
+    BAYESIAN_N_CALLS,
+    BAYESIAN_SATURATION_BOUNDS,
     DATE_COL,
     DEFAULT_CURRENCY,
     HOLDOUT_WEEKS,
@@ -37,283 +41,44 @@ from src.config import (
     MIN_SPEND_THRESHOLD,
     MLFLOW_EXPERIMENT_NAME,
     MLFLOW_TRACKING_URI,
-    RIDGE_ALPHAS,
     SEED,
     SPEND_COLS,
     TARGET_COL,
     TARGET_TERRITORY,
 )
 from src.data_loader import load_data
-from src.preprocessing import filter_low_variance_channels, prepare_weekly_data
+from src.preprocessing import (
+    apply_adstock,
+    apply_saturation_with_max,
+    filter_low_variance_channels,
+    prepare_weekly_data,
+    prepare_baseline_features,
+)
+from src.evaluation import evaluate_ridge_model, compute_ridge_roi
+from src.insights import compute_ridge_coefficients, plot_baseline_results
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def apply_adstock(x: np.ndarray, decay: float = 0.5) -> np.ndarray:
-    """Apply geometric adstock transformation."""
-    result = np.zeros_like(x, dtype=np.float64)
-    result[0] = x[0]
-    for t in range(1, len(x)):
-        result[t] = x[t] + decay * result[t - 1]
-    return result
 
-
-def apply_saturation(x: np.ndarray, half_sat: float = 0.5) -> np.ndarray:
-    """Apply Hill saturation transformation."""
-    x = np.maximum(x, 0)
-    x_norm = x / (x.max() + 1e-8)
-    return x_norm / (half_sat + x_norm)
-
-
-def apply_saturation_with_max(
-    x: np.ndarray,
-    x_max: float,
-    half_sat: float = 0.5,
-) -> np.ndarray:
-    """Apply Hill saturation using pre-computed max (avoids data leakage)."""
-    x = np.maximum(x, 0)
-    x_norm = x / (x_max + 1e-8)
-    return x_norm / (half_sat + x_norm)
-
-
-def prepare_features(
-    df_weekly: pd.DataFrame,
-    adstock_decay: float,
-    saturation_half: float,
-    train_end_idx: int | None = None,
-) -> tuple[pd.DataFrame, np.ndarray, list[str], float, dict]:
-    """
-    Prepare features with adstock and saturation transforms.
-
-    Args:
-        df_weekly: Weekly aggregated DataFrame.
-        train_end_idx: Index where training data ends. If provided, saturation
-            uses train-only statistics to prevent data leakage.
-
-    Returns:
-        (X, y, channels, y_scaler, channel_max_dict)
-    """
-    df = df_weekly.copy()
-    channels = [c for c in SPEND_COLS if c in df.columns]
-
-    # Filter channels with insufficient variance (too many zeros)
-    channels = filter_low_variance_channels(df, channels, MIN_NONZERO_RATIO)
-
-    # Filter low-spend channels
-    total_spend = sum(df[c].sum() for c in channels)
-    channels_filtered = []
-    other_spend = pd.Series(0.0, index=df.index)
-
-    for c in channels:
-        spend_share = df[c].sum() / total_spend
-        if spend_share >= MIN_SPEND_THRESHOLD:
-            channels_filtered.append(c)
-        else:
-            other_spend += df[c].fillna(0)
-
-    if other_spend.sum() > 0:
-        df["OTHER_SPEND"] = other_spend
-        channels_filtered.append("OTHER_SPEND")
-
-    print(f"Channels: {channels_filtered}")
-
-    # Apply adstock and saturation to each channel
-    feature_cols = []
-    channel_max_dict = {}  # Store train max for each channel
-
-    for c in channels_filtered:
-        col_adstock = f"{c}_adstock"
-        col_sat = f"{c}_sat"
-
-        # Apply adstock (this is causal - only uses past values)
-        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
-        
-        # Apply saturation to ADSTOCKED data
-        df[col_sat] = apply_saturation(df[col_adstock].values, half_sat=saturation_half)
-
-        # Compute max from TRAIN ONLY to prevent leakage (if needed for other logic)
-        if train_end_idx is not None:
-            train_max = df[col_adstock].iloc[:train_end_idx].max()
-        else:
-            train_max = df[col_adstock].max()
-
-        channel_max_dict[c] = df[c].max()
-
-        # Use TRANSFORMED spend (Adstock -> Saturation)
-        feature_cols.append(col_sat)
-
-    # Minimal controls (diagnostic showed too many features cause overfitting)
-    control_cols = ["trend"]
-    if "is_holiday" in df.columns:
-        control_cols.append("is_holiday")
-
-    feature_cols.extend(control_cols)
-
-    X = df[feature_cols].fillna(0)
-
-    # Use simple mean scaling (no log-transform for Ridge - simpler is better)
-    # Ridge with StandardScaler already handles scaling of X
-    y = df[TARGET_COL].values
-    y_scaler = y.mean()
-    y = y / y_scaler  # Normalize to ~1
-
-    return X, y, channels_filtered, y_scaler, channel_max_dict
-
-
-from sklearn.model_selection import TimeSeriesSplit
 
 def train_ridge_model(
     X_train: pd.DataFrame,
     y_train: np.ndarray,
+    alpha: float = 10.0,
 ) -> tuple[Pipeline, float]:
-    """Train Ridge Regression model."""
-    # Use TimeSeriesSplit to prevent data leakage from future to past
-    tscv = TimeSeriesSplit(n_splits=5)
-    
+    """Train Ridge Regression model with specified alpha."""
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
-        ("ridge", RidgeCV(alphas=RIDGE_ALPHAS, cv=tscv)),
+        ("ridge", Ridge(alpha=alpha)),
     ])
 
     start_time = time.time()
     pipeline.fit(X_train, y_train)
     training_time = time.time() - start_time
 
-    alpha = pipeline.named_steps["ridge"].alpha_
-    # print(f"Best alpha: {alpha}")
-    # print(f"Training time: {training_time:.2f}s")
-
     return pipeline, training_time
-
-
-def evaluate_model(
-    pipeline: Pipeline,
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    y_train: np.ndarray,
-    y_test: np.ndarray,
-) -> dict:
-    """Evaluate model performance."""
-    y_pred_train = pipeline.predict(X_train)
-    y_pred_test = pipeline.predict(X_test)
-
-    metrics = {
-        "r2_train": float(r2_score(y_train, y_pred_train)),
-        "r2_test": float(r2_score(y_test, y_pred_test)),
-        "mape_train": float(mean_absolute_percentage_error(y_train, y_pred_train) * 100),
-        "mape_test": float(mean_absolute_percentage_error(y_test, y_pred_test) * 100),
-    }
-
-    print(f"R2 Train: {metrics['r2_train']:.3f}")
-    print(f"R2 Test: {metrics['r2_test']:.3f}")
-    print(f"MAPE Test: {metrics['mape_test']:.1f}%")
-
-    return metrics
-
-
-def compute_coefficients(
-    pipeline: Pipeline,
-    feature_names: list[str],
-    channels: list[str],
-) -> pd.DataFrame:
-    """Extract and format model coefficients."""
-    coefs = pipeline.named_steps["ridge"].coef_
-    intercept = pipeline.named_steps["ridge"].intercept_
-
-    coef_data = []
-    for name, coef in zip(feature_names, coefs):
-        is_channel = any(c in name for c in channels)
-        coef_data.append({
-            "feature": name,
-            "coefficient": float(coef),
-            "type": "channel" if is_channel else "control",
-        })
-
-    coef_data.append({
-        "feature": "intercept",
-        "coefficient": float(intercept),
-        "type": "intercept",
-    })
-
-    return pd.DataFrame(coef_data).sort_values("coefficient", ascending=False)
-
-
-def compute_roi(
-    pipeline: Pipeline,
-    X: pd.DataFrame,
-    channels: list[str],
-    y_scaler: float,
-) -> pd.DataFrame:
-    """Compute approximate ROI from coefficients."""
-    coefs = dict(zip(X.columns, pipeline.named_steps["ridge"].coef_))
-
-    roi_data = []
-    for c in channels:
-        # Check for raw spend column (no saturation transform)
-        if c in coefs:
-            roi_data.append({
-                "channel": c.replace("_SPEND", ""),
-                "coefficient": coefs[c],
-                "roi": coefs[c] * y_scaler,
-            })
-        # Legacy: check for _sat suffix
-        elif f"{c}_sat" in coefs:
-            roi_data.append({
-                "channel": c.replace("_SPEND", ""),
-                "coefficient": coefs[f"{c}_sat"],
-                "roi": coefs[f"{c}_sat"] * y_scaler,
-            })
-
-    return pd.DataFrame(roi_data).sort_values("roi", ascending=False)
-
-
-def plot_results(
-    pipeline: Pipeline,
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    y_train: np.ndarray,
-    y_test: np.ndarray,
-    coef_df: pd.DataFrame,
-    output_dir: Path,
-) -> None:
-    """Generate visualization plots."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    # Actual vs Predicted (train)
-    y_pred_train = pipeline.predict(X_train)
-    ax = axes[0, 0]
-    ax.plot(y_train, label="Actual", alpha=0.7)
-    ax.plot(y_pred_train, label="Predicted", alpha=0.7)
-    ax.set_title("Train: Actual vs Predicted")
-    ax.legend()
-
-    # Actual vs Predicted (test)
-    y_pred_test = pipeline.predict(X_test)
-    ax = axes[0, 1]
-    ax.plot(y_test, label="Actual", alpha=0.7)
-    ax.plot(y_pred_test, label="Predicted", alpha=0.7)
-    ax.set_title("Test: Actual vs Predicted")
-    ax.legend()
-
-    # Coefficients bar chart
-    ax = axes[1, 0]
-    channel_coefs = coef_df[coef_df["type"] == "channel"]
-    colors = ["green" if c > 0 else "red" for c in channel_coefs["coefficient"]]
-    ax.barh(channel_coefs["feature"], channel_coefs["coefficient"], color=colors)
-    ax.set_title("Channel Coefficients")
-    ax.axvline(x=0, color="gray", linestyle="--")
-
-    # Residuals
-    ax = axes[1, 1]
-    residuals = y_train - y_pred_train
-    ax.hist(residuals, bins=20, edgecolor="black")
-    ax.set_title("Residual Distribution")
-    ax.axvline(x=0, color="red", linestyle="--")
-
-    plt.tight_layout()
-    plt.savefig(output_dir / "ridge_baseline_results.png", dpi=150, bbox_inches="tight")
-    plt.close()
 
 
 def run_ridge_baseline(
@@ -340,71 +105,85 @@ def run_ridge_baseline(
     # Compute train end index BEFORE feature preparation
     train_end_idx = len(df_weekly) - HOLDOUT_WEEKS
 
-    # --- Grid Search for Feature Engineering Parameters ---
-    best_score = -float("inf")
-    best_params = {}
-    best_results = None
-
-    param_grid = list(itertools.product(BASELINE_ADSTOCK_DECAY, BASELINE_SATURATION_HALF))
-    print(f"\n2. Grid Search over {len(param_grid)} parameter combinations...")
-
-    for i, (decay, sat_half) in enumerate(param_grid):
-        print(f"   [{i+1}/{len(param_grid)}] Testing Adstock={decay}, Saturation={sat_half}...", end="\r")
+    # --- Bayesian Optimization for Hyperparameters ---
+    print(f"\n2. Bayesian Search ({BAYESIAN_N_CALLS} iterations)...")
+    
+    def objective(params):
+        decay, sat_half, alpha = params
         
-        # Prepare features with current params
-        X, y, channels, y_scaler, channel_max_dict = prepare_features(
+        X, y, channels, y_scaler, channel_max = prepare_baseline_features(
             df_weekly, 
             adstock_decay=decay,
             saturation_half=sat_half,
-            train_end_idx=train_end_idx
+            spend_cols=SPEND_COLS,
+            target_col=TARGET_COL,
+            min_nonzero_ratio=MIN_NONZERO_RATIO,
+            min_spend_threshold=MIN_SPEND_THRESHOLD,
+            train_end_idx=train_end_idx,
+            verbose=False,
         )
-
-        # Split
-        X_train = X.iloc[:train_end_idx]
-        X_test = X.iloc[train_end_idx:]
-        y_train = y[:train_end_idx]
-        y_test = y[train_end_idx:]
-
-        # Train Ridge (optimize alpha internally)
-        pipeline, t_time = train_ridge_model(X_train, y_train)
         
-        # Evaluate on Test Set (using R2 as selection metric)
-        # Note: Ideally we use CV score, but RidgeCV uses internal LOO/CV.
-        # We want to select the hyperparameters that generalize best to the holdout.
-        metrics = evaluate_model(pipeline, X_train, X_test, y_train, y_test)
+        X_train_obj = X.iloc[:train_end_idx]
+        X_test_obj = X.iloc[train_end_idx:]
+        y_train_obj = y[:train_end_idx]
+        y_test_obj = y[train_end_idx:]
         
-        # Selection criterion: Test R2 (or could use MAPE)
-        score = metrics["r2_test"]
+        pipeline = Pipeline([
+            ("scaler", StandardScaler()),
+            ("ridge", Ridge(alpha=alpha)),
+        ])
+        pipeline.fit(X_train_obj, y_train_obj)
         
-        if score > best_score:
-            best_score = score
-            best_params = {
-                "adstock_decay": decay,
-                "saturation_half": sat_half,
-                "alpha": pipeline.named_steps["ridge"].alpha_,
-                "feature_prep_results": (X, y, channels, y_scaler, channel_max_dict),
-                "pipeline": pipeline,
-                "training_time": t_time
-            }
-            best_results = metrics
+        # Negative R² for minimization
+        return -pipeline.score(X_test_obj, y_test_obj)
 
-    print(f"\n\n   Best Params: Adstock={best_params['adstock_decay']}, Saturation={best_params['saturation_half']}")
+    search_space = [
+        Real(*BAYESIAN_ADSTOCK_BOUNDS, prior="log-uniform", name="adstock_decay"),
+        Real(*BAYESIAN_SATURATION_BOUNDS, prior="log-uniform", name="saturation_half"),
+        Real(*BAYESIAN_ALPHA_BOUNDS, prior="log-uniform", name="alpha"),
+    ]
+
+    result = gp_minimize(
+        objective,
+        search_space,
+        n_calls=BAYESIAN_N_CALLS,
+        random_state=SEED,
+        verbose=False,
+    )
+
+    best_decay, best_sat, best_alpha = result.x
+    best_score = -result.fun
+
+    print(f"\n   Best Params: Adstock={best_decay:.4f}, Saturation={best_sat:.4f}, Alpha={best_alpha:.1f}")
     print(f"   Best Test R²: {best_score:.4f}")
 
-    # Use Best Model
-    X, y, channels, y_scaler, channel_max_dict = best_params["feature_prep_results"]
-    pipeline = best_params["pipeline"]
-    metrics = best_results
-    metrics["training_time"] = best_params["training_time"]
-    metrics["alpha"] = float(best_params["alpha"])
-    metrics["best_adstock"] = best_params["adstock_decay"]
-    metrics["best_saturation"] = best_params["saturation_half"]
+    # Prepare final features with best params
+    X, y, channels, y_scaler, channel_max_dict = prepare_baseline_features(
+        df_weekly, 
+        adstock_decay=best_decay,
+        saturation_half=best_sat,
+        spend_cols=SPEND_COLS,
+        target_col=TARGET_COL,
+        min_nonzero_ratio=MIN_NONZERO_RATIO,
+        min_spend_threshold=MIN_SPEND_THRESHOLD,
+        train_end_idx=train_end_idx
+    )
 
-    # Split (re-create for final scope)
+    # Split
     X_train = X.iloc[:train_end_idx]
     X_test = X.iloc[train_end_idx:]
     y_train = y[:train_end_idx]
     y_test = y[train_end_idx:]
+
+    # Train final model
+    pipeline, training_time = train_ridge_model(X_train, y_train, alpha=best_alpha)
+
+    # Evaluate
+    metrics = evaluate_ridge_model(pipeline, X_train, X_test, y_train, y_test)
+    metrics["training_time"] = training_time
+    metrics["alpha"] = best_alpha
+    metrics["best_adstock"] = best_decay
+    metrics["best_saturation"] = best_sat
 
     print(f"Train: {len(X_train)} weeks, Test: {len(X_test)} weeks")
 
@@ -414,10 +193,10 @@ def run_ridge_baseline(
             "model_type": "ridge_baseline",
             "region": region or TARGET_TERRITORY,
             "n_channels": len(channels),
-            "adstock_decay": best_params["adstock_decay"],
-            "saturation_half": best_params["saturation_half"],
+            "adstock_decay": best_decay,
+            "saturation_half": best_sat,
             "holdout_weeks": HOLDOUT_WEEKS,
-            "best_alpha": best_params["alpha"]
+            "best_alpha": best_alpha,
         })
         
         # Already trained and evaluated
@@ -427,8 +206,8 @@ def run_ridge_baseline(
         mlflow.log_metrics(metrics)
 
         # Coefficients
-        coef_df = compute_coefficients(pipeline, list(X.columns), channels)
-        roi_df = compute_roi(pipeline, X, channels, y_scaler)
+        coef_df = compute_ridge_coefficients(pipeline, list(X.columns), channels)
+        roi_df = compute_ridge_roi(pipeline, X, channels, y_scaler)
 
         # Save to MLflow as JSON
         mlflow.log_dict({"metrics": metrics}, "deliverables/baseline_metrics.json")
@@ -443,7 +222,7 @@ def run_ridge_baseline(
 
         # Plots
         print("\n5. Generating plots...")
-        plot_results(pipeline, X_train, X_test, y_train, y_test, coef_df, output_dir)
+        plot_baseline_results(pipeline, X_train, X_test, y_train, y_test, coef_df, output_dir)
         mlflow.log_artifact(output_dir / "ridge_baseline_results.png")
 
         # Save locally

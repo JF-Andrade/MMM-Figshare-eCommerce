@@ -238,14 +238,12 @@ MMM-Figshare-eCommerce/
 ├── src/
 │   ├── config.py              # Centralized configuration (all hyperparameters)
 │   ├── data_loader.py         # Data loading and validation
-│   ├── preprocessing.py       # Adstock, saturation, calendar features
-│   ├── feature_engineering.py # Feature derivation functions
+│   ├── preprocessing.py       # Adstock, saturation, feature engineering
 │   ├── models/                # Model package
 │   │   ├── __init__.py        # Package exports
 │   │   └── hierarchical_bayesian.py  # Bayesian MMM with learned transforms
 │   ├── evaluation.py          # Convergence, metrics, ROI computation
-│   ├── optimization.py        # Budget allocation optimizer
-│   ├── model_insights.py      # Adstock/saturation parameter extraction
+│   ├── insights.py            # Budget optimization, parameter extraction
 │   ├── comparison.py          # Model comparison utilities
 │   ├── schemas.py             # Pydantic data schemas
 │   └── validation.py          # Expanding window CV module

@@ -40,16 +40,13 @@ from src.config import (
     SPEND_COLS,
     TARGET_COL,
     YEARLY_SEASONALITY,
-    CV_ENABLED,
-    CV_FOLDS,
-    CV_MIN_TRAIN_WEEKS,
-    CV_TEST_WEEKS,
-    CV_SAVE_INTERMEDIATE,
-    CV_CHECKPOINT_DIR,
-    CV_RESUME_FROM_FOLD,
+    HOLDOUT_WEEKS,
     ALL_FEATURES,
     SHARE_COLS,
     SEASON_COLS,
+    DATE_COL,
+    GEO_COL,
+    MIN_WEEKS_PER_REGION,
 )
 from src.data_loader import get_valid_regions, load_data
 from src.preprocessing import (
@@ -61,15 +58,7 @@ from src.preprocessing import (
     add_fourier_seasonality,
     prepare_weekly_data,
 )
-from src.validation import (
-    expanding_window_cv,
-    get_fold_data,
-    CVResult,
-    aggregate_cv_results,
-    validate_panel_for_cv,
-    panel_expanding_window_cv,
-    get_panel_fold_indices,
-)
+from src.validation import get_panel_holdout_indices
 from src.evaluation import check_convergence, compute_roi_by_region, evaluate_model
 from src.models.hierarchical_bayesian import (
     build_hierarchical_mmm,
@@ -79,35 +68,30 @@ from src.models.hierarchical_bayesian import (
     evaluate as evaluate_custom,
     compute_channel_contributions,
 )
-from src.model_insights import (
+from src.insights import (
     extract_adstock_params,
     extract_saturation_params,
     plot_adstock_decay,
     plot_channel_contributions_waterfall,
     plot_saturation_curves,
-)
-from src.optimization import (
     compute_marginal_roas,
     compute_revenue_lift,
     optimize_budget,
     plot_marginal_roas_curves,
     plot_optimization_results,
+    plot_regional_comparison,
+    plot_roi_heatmap,
 )
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-
-# Hierarchical-specific configuration
-MIN_WEEKS_PER_REGION = 52
-DATE_COL = "week"
-GEO_COL = "geo"
 
 
 def prepare_hierarchical_data(
     df: pd.DataFrame,
     regions: list[str],
 ) -> tuple[pd.DataFrame, dict]:
-    from src.feature_engineering import engineer_features
+    from src.preprocessing import engineer_features
 
     all_data = []
     for region in regions:
@@ -200,14 +184,9 @@ def prepare_model_data(
 
     # Temporal Split
     if train_indices is None or test_indices is None:
-        # Legacy behavior: HOLDOUT_WEEKS split
-        train_indices = []
-        test_indices = []
-        for region in df[GEO_COL].unique():
-            region_mask = df[GEO_COL] == region
-            region_idx = df.index[region_mask].tolist()
-            train_indices.extend(region_idx[:-HOLDOUT_WEEKS])
-            test_indices.extend(region_idx[-HOLDOUT_WEEKS:])
+        train_indices, test_indices = get_panel_holdout_indices(
+            df, GEO_COL, HOLDOUT_WEEKS
+        )
 
     df_train = df.loc[train_indices].copy()
     df_test = df.loc[test_indices].copy()
@@ -264,62 +243,6 @@ def prepare_model_data(
     print(f" - Season: {model_data['X_season_train'].shape}")
     
     return model_data
-
-
-def plot_regional_comparison(
-    roi_df: pd.DataFrame,
-    output_dir: Path,
-) -> None:
-    """Generate regional comparison visualizations."""
-    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-
-    # ROI by Channel and Region
-    ax = axes[0]
-    pivot_roi = roi_df.pivot(index="channel", columns="region", values="roi")
-    pivot_roi.plot(kind="barh", ax=ax)
-    ax.axvline(x=1.0, color="gray", linestyle="--", label="Break-even")
-    ax.set_xlabel("ROI")
-    ax.set_title("Channel ROI by Region")
-    ax.legend(title="Region", bbox_to_anchor=(1.02, 1), loc="upper left")
-
-    # Contribution by Channel and Region
-    ax = axes[1]
-    pivot_contrib = roi_df.pivot(index="channel", columns="region", values="contribution")
-    pivot_contrib.plot(kind="barh", ax=ax)
-    ax.set_xlabel("Total Contribution")
-    ax.set_title("Channel Contributions by Region")
-    ax.legend(title="Region", bbox_to_anchor=(1.02, 1), loc="upper left")
-
-    plt.tight_layout()
-    plt.savefig(output_dir / "hierarchical_regional_comparison.png", dpi=150, bbox_inches="tight")
-    plt.close()
-
-
-def plot_roi_heatmap(roi_df: pd.DataFrame, output_dir: Path) -> None:
-    """Generate ROI heatmap across channels and regions."""
-    pivot = roi_df.pivot(index="channel", columns="region", values="roi")
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-
-    im = ax.imshow(pivot.values, cmap="RdYlGn", aspect="auto", vmin=0, vmax=5)
-
-    ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels(pivot.columns, rotation=45, ha="right")
-    ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels(pivot.index)
-
-    # Add text annotations
-    for i in range(len(pivot.index)):
-        for j in range(len(pivot.columns)):
-            val = pivot.values[i, j]
-            color = "white" if val > 2.5 or val < 1 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center", color=color, fontsize=8)
-
-    cbar = fig.colorbar(im, ax=ax, label="ROI")
-    ax.set_title("Channel ROI by Region (Hierarchical Model)")
-
-    plt.savefig(output_dir / "hierarchical_roi_heatmap.png", dpi=150, bbox_inches="tight")
-    plt.close()
 
 
 def save_model(
@@ -406,256 +329,12 @@ def validate_and_save_deliverables(
     }
     
     print(f"Validated {len(roi_list)} ROI entries")
-    
     return deliverables
 
 
 # =============================================================================
-# CROSS-VALIDATION FUNCTIONS
+# MAIN TRAINING FUNCTION (Holdout Validation)
 # =============================================================================
-
-
-def run_cv_fold(
-    df_combined: pd.DataFrame,
-    indices: dict,
-    fold: "CVFold",
-    output_dir: Path,
-) -> tuple[CVResult, az.InferenceData | None]:
-    """
-    Train and evaluate single CV fold.
-    
-    Returns:
-        (CVResult, idata) - idata is None if training failed
-    """
-    from src.validation import CVFold
-    import gc
-    
-    print(f"\n{'='*60}")
-    print(f"FOLD {fold.fold}: Train weeks 0-{fold.train_end}, Test weeks {fold.test_start}-{fold.test_end}")
-    print(f"{'='*60}")
-    
-    # Get indices for this fold
-    train_idx, test_idx = get_panel_fold_indices(
-        df_combined, fold, GEO_COL, DATE_COL
-    )
-    
-    # Prepare data
-    m_data = prepare_model_data(df_combined, indices, train_idx, test_idx)
-    
-    print(f"Train samples: {len(m_data['y_train'])}, Test samples: {len(m_data['y_test'])}")
-    
-    # Build fresh model
-    model = build_hierarchical_mmm(
-        X_spend=m_data["X_spend_train"],
-        X_features=m_data["X_features_train"],
-        X_season=m_data["X_season_train"],
-        y=m_data["y_train"],
-        territory_idx=m_data["territory_idx_train"],
-        currency_idx=m_data["currency_idx_train"],
-        territory_to_currency=m_data["territory_to_currency"],
-        n_currencies=m_data["n_currencies"],
-        n_territories=m_data["n_territories"],
-        l_max=L_MAX,
-        channel_names=m_data["channel_names"],
-        feature_names=m_data["feature_names"],
-        use_student_t=True,
-    )
-    
-    # Fit with error handling
-    try:
-        idata = fit_custom_model(
-            model,
-            draws=MCMC_DRAWS,
-            tune=MCMC_TUNE,
-            chains=MCMC_CHAINS,
-            target_accept=MCMC_TARGET_ACCEPT,
-            max_treedepth=MCMC_MAX_TREEDEPTH,
-            random_seed=SEED + fold.fold,
-        )
-    except Exception as e:
-        print(f"[ERROR] Fold {fold.fold} training failed: {e}")
-        return CVResult(
-            fold=fold.fold,
-            train_size=len(train_idx),
-            test_size=len(test_idx),
-            r2_train=float("nan"),
-            r2_test=float("nan"),
-            mape_train=float("nan"),
-            mape_test=float("nan"),
-            divergences=-1,
-        ), None
-    
-    # Diagnostics
-    diagnostics = check_custom_convergence(idata)
-    
-    # Evaluate on train
-    with model:
-        pm.set_data({
-            "X_spend": m_data["X_spend_train"],
-            "X_features": m_data["X_features_train"],
-            "X_season": m_data["X_season_train"],
-            "territory_idx": m_data["territory_idx_train"],
-            "currency_idx": m_data["currency_idx_train"],
-            "y_obs_data": m_data["y_train"],
-        })
-        y_pred_train = predict_custom(model, idata)
-    train_metrics = evaluate_custom(m_data["y_train_original"], y_pred_train)
-    
-    # Evaluate on test
-    with model:
-        pm.set_data({
-            "X_spend": m_data["X_spend_test"],
-            "X_features": m_data["X_features_test"],
-            "X_season": m_data["X_season_test"],
-            "territory_idx": m_data["territory_idx_test"],
-            "currency_idx": m_data["currency_idx_test"],
-            "y_obs_data": np.full_like(m_data["y_test"], np.nan),  # NaN for holdout
-        })
-        y_pred_test = predict_custom(model, idata)
-    test_metrics = evaluate_custom(m_data["y_test_original"], y_pred_test)
-    
-    # Save checkpoint
-    if CV_SAVE_INTERMEDIATE:
-        CV_CHECKPOINT_DIR.mkdir(exist_ok=True, parents=True)
-        checkpoint_path = CV_CHECKPOINT_DIR / f"fold_{fold.fold}_idata.nc"
-        idata.to_netcdf(checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
-    
-    result = CVResult(
-        fold=fold.fold,
-        train_size=len(train_idx),
-        test_size=len(test_idx),
-        r2_train=train_metrics["r2"],
-        r2_test=test_metrics["r2"],
-        mape_train=train_metrics["mape"],
-        mape_test=test_metrics["mape"],
-        divergences=diagnostics["divergences"],
-    )
-    
-    print(f"Fold {fold.fold} Results: R² Train={result.r2_train:.3f}, R² Test={result.r2_test:.3f}")
-    
-    # Memory cleanup
-    del model, idata
-    gc.collect()
-    
-    return result, None
-
-
-def run_hierarchical_with_cv(
-    data_path: Path,
-    output_dir: Path,
-    max_regions: int | None = None,
-    n_folds: int = CV_FOLDS,
-    resume_from: int = CV_RESUME_FROM_FOLD,
-) -> tuple[list[CVResult], dict]:
-    """
-    Run Full CV training.
-    
-    Args:
-        data_path: Path to data file
-        output_dir: Output directory
-        max_regions: Limit number of regions
-        n_folds: Number of CV folds
-        resume_from: Fold number to resume from (0 = start fresh)
-    
-    Returns:
-        (list of CVResult, aggregated metrics dict)
-    """
-    import json
-    
-    print("=" * 60)
-    print(f"CROSS-VALIDATION MODE: {n_folds} FOLDS")
-    print("=" * 60)
-    
-    # Setup MLflow
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
-    
-    # Load data
-    df = load_data(data_path)
-    regions = get_valid_regions(df)
-    
-    if max_regions:
-        region_revenue = df.groupby("TERRITORY_NAME")[TARGET_COL].sum()
-        regions = [r for r in regions if r in region_revenue.index]
-        regions = sorted(regions, key=lambda r: region_revenue[r], reverse=True)[:max_regions]
-        print(f"Using top {max_regions} regions: {regions}")
-    
-    # Prepare data once
-    df_combined, indices = prepare_hierarchical_data(df, regions)
-    
-    # Validate data sufficiency
-    total_weeks_needed = CV_MIN_TRAIN_WEEKS + n_folds * CV_TEST_WEEKS
-    validate_panel_for_cv(
-        df_combined, GEO_COL, DATE_COL, total_weeks_needed
-    )
-    
-    cv_results = []
-    
-    # Load previous results if resuming
-    if resume_from > 0:
-        results_path = output_dir / "cv_results_partial.json"
-        if results_path.exists():
-            with open(results_path) as f:
-                saved = json.load(f)
-            cv_results = [CVResult(**r) for r in saved if r["fold"] < resume_from]
-            print(f"Resuming from fold {resume_from}, loaded {len(cv_results)} previous results")
-    
-    with mlflow.start_run(run_name=f"cv_{n_folds}folds_{len(regions)}regions"):
-        mlflow.log_params({
-            "cv_mode": "full",
-            "n_folds": n_folds,
-            "n_regions": len(regions),
-            "min_train_weeks": CV_MIN_TRAIN_WEEKS,
-            "test_weeks": CV_TEST_WEEKS,
-        })
-        
-        for fold in panel_expanding_window_cv(
-            df_combined,
-            geo_col=GEO_COL,
-            date_col=DATE_COL,
-            n_splits=n_folds,
-            min_train_weeks=CV_MIN_TRAIN_WEEKS,
-            test_weeks=CV_TEST_WEEKS,
-        ):
-            if fold.fold < resume_from:
-                continue
-            
-            with mlflow.start_run(run_name=f"fold_{fold.fold}", nested=True):
-                result, _ = run_cv_fold(df_combined, indices, fold, output_dir)
-                cv_results.append(result)
-                
-                mlflow.log_metrics({
-                    "r2_train": result.r2_train,
-                    "r2_test": result.r2_test,
-                    "mape_train": result.mape_train,
-                    "mape_test": result.mape_test,
-                    "divergences": result.divergences,
-                })
-            
-            # Save partial results for resume capability
-            output_dir.mkdir(exist_ok=True, parents=True)
-            with open(output_dir / "cv_results_partial.json", "w") as f:
-                json.dump([r.__dict__ for r in cv_results], f)
-        
-        # Aggregate
-        agg = aggregate_cv_results(cv_results)
-        mlflow.log_metrics({
-            "cv_r2_test_mean": agg["r2_test_mean"],
-            "cv_r2_test_std": agg["r2_test_std"],
-            "cv_mape_test_mean": agg["mape_test_mean"],
-            "cv_mape_test_std": agg["mape_test_std"],
-            "cv_total_divergences": agg["total_divergences"],
-        })
-        
-        print(f"\n{'='*60}")
-        print("CROSS-VALIDATION SUMMARY")
-        print(f"{'='*60}")
-        print(f"R² Test:   {agg['r2_test_mean']:.3f} ± {agg['r2_test_std']:.3f}")
-        print(f"MAPE Test: {agg['mape_test_mean']:.1f}% ± {agg['mape_test_std']:.1f}%")
-        print(f"Divergences: {agg['total_divergences']} total across {n_folds} folds")
-        
-    return cv_results, agg
 
 
 def run_hierarchical(
@@ -878,17 +557,6 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Hierarchical MMM Training")
     parser.add_argument("--max-regions", type=int, default=None, help="Limit number of regions")
-    parser.add_argument("--cv", action="store_true", help="Enable cross-validation mode")
-    parser.add_argument("--cv-folds", type=int, default=CV_FOLDS, help="Number of CV folds")
-    parser.add_argument("--resume-fold", type=int, default=0, help="Resume from fold N")
     args = parser.parse_args()
     
-    if args.cv:
-        run_hierarchical_with_cv(
-            DATA_PATH, OUTPUT_DIR,
-            max_regions=args.max_regions,
-            n_folds=args.cv_folds,
-            resume_from=args.resume_fold,
-        )
-    else:
-        run_hierarchical(DATA_PATH, OUTPUT_DIR, args.max_regions)
+    run_hierarchical(DATA_PATH, OUTPUT_DIR, args.max_regions)

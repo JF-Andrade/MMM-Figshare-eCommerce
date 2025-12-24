@@ -39,6 +39,8 @@ PROCESSED_FILENAME = "mmm_data.parquet"
 # Target Variable
 TARGET_COL = "ALL_PURCHASES_ORIGINAL_PRICE"
 DATE_COL = "week"
+GEO_COL = "geo"
+MIN_WEEKS_PER_REGION = 52
 
 # Spend Channels
 SPEND_COLS = [
@@ -53,9 +55,8 @@ SPEND_COLS = [
     "TIKTOK_SPEND",
 ]
 
-# Share Columns (from Spend)
-# NOTE: One share column (TIKTOK_SHARE) is dropped to avoid perfect multicollinearity
-# (shares sum to 1). TIKTOK serves as the reference category.
+# Share of Spend Columns
+# TIKTOK_SHARE is dropped to avoid perfect multicollinearity
 _ALL_SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
 SHARE_COLS = _ALL_SHARE_COLS[:-1]  # Excludes TIKTOK_SHARE
 SHARE_REFERENCE_COL = _ALL_SHARE_COLS[-1]  # "TIKTOK_SHARE"
@@ -76,8 +77,7 @@ TRAFFIC_COLS = [
     "ALL_OTHER_CLICKS",
 ]
 
-# NOTE: The following feature sets are defined but excluded from the final model 
-# to avoid endogeneity (CTR, CPC) or data leakage (Customer metrics).
+# Defined but excluded from the final model to avoid endogeneity (CTR, CPC) or data leakage (Customer metrics).
 CTR_COLS = [
     "GOOGLE_PAID_SEARCH_CTR", "GOOGLE_SHOPPING_CTR", "GOOGLE_PMAX_CTR",
     "GOOGLE_DISPLAY_CTR", "GOOGLE_VIDEO_CTR", "META_FACEBOOK_CTR",
@@ -120,16 +120,6 @@ YEARLY_SEASONALITY = 2  # Number of Fourier terms
 
 HOLDOUT_WEEKS = 12
 
-# 3 Fold Cross-Validation Configuration
-CV_ENABLED = True
-CV_MODE = "full"       # "full" = K independent training runs
-CV_FOLDS = 3
-CV_MIN_TRAIN_WEEKS = 52  # Minimum training weeks for first fold
-CV_TEST_WEEKS = 12       # Fixed test window per fold
-CV_SAVE_INTERMEDIATE = True  # Save idata per fold to disk
-CV_CHECKPOINT_DIR = MODELS_DIR / "cv_checkpoints"
-CV_RESUME_FROM_FOLD = 0  # Set > 0 to resume interrupted CV
-
 # =============================================================================
 # 6. BAYESIAN MODEL CONFIGURATION (Hierarchical)
 # =============================================================================
@@ -161,8 +151,7 @@ PRIOR_SIGMA_TERRITORY = 0.3  # Variation between territories within currency
 PRIOR_BETA_CHANNEL_SIGMA = 0.5     # HalfNormal sigma for channel betas
 PRIOR_SIGMA_BETA_TERRITORY = 0.05  # Regional variation in channel effects
 
-# --- Priors: Feature Effects (Regularized Horseshoe - Piironen & Vehtari, 2017) ---
-# m0: Expected number of relevant (non-zero) features out of total auxiliary features
+# --- Priors: Feature Effects (Regularized Horseshoe - Piironen & Vehtari, 2017) --- Lido em https://arxiv.org/abs/1707.01694
 # Higher m0 = weaker regularization, lower m0 = stronger regularization
 PRIOR_HORSESHOE_M0 = 20  # Expected ~20 relevant features out of ~40
 PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
@@ -178,12 +167,16 @@ PRIOR_NU_ALPHA = 2     # Gamma(alpha, beta) for degrees of freedom
 PRIOR_NU_BETA = 0.1
 
 # =============================================================================
-# 7. BASELINE MODEL CONFIGURATION (freq. Ridge)
+# 7. BASELINE MODEL CONFIGURATION (Ridge Regression with Bayesian Optimization)
 # =============================================================================
 
-RIDGE_ALPHAS = [0.1, 1, 5, 10, 25, 40, 50, 60, 75, 100, 500]
-BASELINE_ADSTOCK_DECAY = [0.001, 0.01, 0.05, 0.1, 0.2]
-BASELINE_SATURATION_HALF = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5]
+RIDGE_ALPHAS = [0.1, 1, 10, 50, 100, 500]  # Fallback for non-Bayesian
+
+# Bayesian Hyperparameter Search (gp_minimize)
+BAYESIAN_N_CALLS = 50
+BAYESIAN_ADSTOCK_BOUNDS = (0.001, 0.5)   # log-uniform
+BAYESIAN_SATURATION_BOUNDS = (0.01, 0.5)  # log-uniform
+BAYESIAN_ALPHA_BOUNDS = (0.1, 500.0)      # log-uniform
 
 # =============================================================================
 # 8. EXPERIMENT TRACKING (MLflow)

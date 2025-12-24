@@ -214,3 +214,83 @@ def compute_roi_by_region(
             })
 
     return pd.DataFrame(roi_data)
+
+
+# =============================================================================
+# RIDGE BASELINE EVALUATION
+# =============================================================================
+
+
+def evaluate_ridge_model(
+    pipeline,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+) -> dict:
+    """
+    Evaluate Ridge Regression model performance.
+
+    Args:
+        pipeline: Fitted sklearn Pipeline with Ridge.
+        X_train, X_test: Feature DataFrames.
+        y_train, y_test: Target arrays.
+
+    Returns:
+        Dict with r2_train, r2_test, mape_train, mape_test.
+    """
+    from sklearn.metrics import mean_absolute_percentage_error, r2_score
+
+    y_pred_train = pipeline.predict(X_train)
+    y_pred_test = pipeline.predict(X_test)
+
+    metrics = {
+        "r2_train": float(r2_score(y_train, y_pred_train)),
+        "r2_test": float(r2_score(y_test, y_pred_test)),
+        "mape_train": float(mean_absolute_percentage_error(y_train, y_pred_train) * 100),
+        "mape_test": float(mean_absolute_percentage_error(y_test, y_pred_test) * 100),
+    }
+
+    print(f"R2 Train: {metrics['r2_train']:.3f}")
+    print(f"R2 Test: {metrics['r2_test']:.3f}")
+    print(f"MAPE Test: {metrics['mape_test']:.1f}%")
+
+    return metrics
+
+
+def compute_ridge_roi(
+    pipeline,
+    X: pd.DataFrame,
+    channels: list[str],
+    y_scaler: float,
+) -> pd.DataFrame:
+    """
+    Compute approximate ROI from Ridge coefficients.
+
+    Args:
+        pipeline: Fitted sklearn Pipeline with Ridge.
+        X: Feature DataFrame.
+        channels: List of channel names.
+        y_scaler: Scaling factor for y.
+
+    Returns:
+        DataFrame with channel, coefficient, roi.
+    """
+    coefs = dict(zip(X.columns, pipeline.named_steps["ridge"].coef_))
+
+    roi_data = []
+    for c in channels:
+        if c in coefs:
+            roi_data.append({
+                "channel": c.replace("_SPEND", ""),
+                "coefficient": coefs[c],
+                "roi": coefs[c] * y_scaler,
+            })
+        elif f"{c}_sat" in coefs:
+            roi_data.append({
+                "channel": c.replace("_SPEND", ""),
+                "coefficient": coefs[f"{c}_sat"],
+                "roi": coefs[f"{c}_sat"] * y_scaler,
+            })
+
+    return pd.DataFrame(roi_data).sort_values("roi", ascending=False)
