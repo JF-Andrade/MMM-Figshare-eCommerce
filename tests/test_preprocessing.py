@@ -74,3 +74,62 @@ def test_create_lag_features() -> None:
     assert pd.isna(result["spend_lag1"].iloc[0])
     # Second row's lag1 should be first row's spend
     assert result["spend_lag1"].iloc[1] == 100
+
+
+def test_compute_temporal_features() -> None:
+    """Test temporal feature generation from DATE_DAY."""
+    from src.preprocessing import compute_temporal_features
+    
+    df = pd.DataFrame({
+        "DATE_DAY": pd.to_datetime(["2023-01-01", "2023-01-02"]),  # Sunday, Monday
+    })
+    
+    result = compute_temporal_features(df)
+    
+    assert "DAY_OF_WEEK" in result.columns
+    assert "QUARTER" in result.columns
+    assert "WEEK_OF_YEAR" in result.columns
+    
+    # Sunday is index 6, normalized to 1.0 (6/6)
+    assert result["DAY_OF_WEEK"].iloc[0] == 1.0
+    # Monday is index 0, normalized to 0.0
+    assert result["DAY_OF_WEEK"].iloc[1] == 0.0
+
+
+def test_compute_spend_share() -> None:
+    """Test spend share computation."""
+    from src.preprocessing import compute_spend_share
+    
+    df = pd.DataFrame({
+        "A_SPEND": [100, 200],
+        "B_SPEND": [100, 600],
+    })
+    
+    spend_cols = ["A_SPEND", "B_SPEND"]
+    result = compute_spend_share(df, spend_cols=spend_cols)
+    
+    assert "A_SHARE" in result.columns
+    assert "B_SHARE" in result.columns
+    
+    # Row 0: 100 / (100+100) = 0.5
+    assert result["A_SHARE"].iloc[0] == 0.5
+    # Row 1: 200 / (200+600) = 0.25
+    assert result["A_SHARE"].iloc[1] == 0.25
+
+
+def test_engineer_features_orchestration() -> None:
+    """Test full feature engineering pipeline."""
+    from src.preprocessing import engineer_features
+    
+    df = pd.DataFrame({
+        "DATE_DAY": pd.to_datetime(["2023-01-01"]),
+        "GOOGLE_PAID_SEARCH_SPEND": [1000],
+    })
+    
+    # Should work with defaults if we mock config or pass spend_cols
+    # Here we just check output structure
+    result = engineer_features(df)
+    
+    assert "DAY_OF_WEEK" in result.columns
+    # GOOGLE_PAID_SEARCH_SPEND is in config.SPEND_COLS
+    assert "GOOGLE_PAID_SEARCH_SHARE" in result.columns
