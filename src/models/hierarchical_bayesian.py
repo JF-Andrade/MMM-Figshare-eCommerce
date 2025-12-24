@@ -541,10 +541,8 @@ def fit_model(
     
     with model:
         sampler_kwargs = {}
-        if sampler == "numpyro":
-            # NumPyro uses 'max_tree_depth' instead of 'max_treedepth'
-            sampler_kwargs["max_tree_depth"] = max_treedepth
-        else:
+        if sampler != "numpyro":
+            # Only pass max_treedepth to PyMC's native NUTS
             sampler_kwargs["max_treedepth"] = max_treedepth
             
         idata = pm.sample(
