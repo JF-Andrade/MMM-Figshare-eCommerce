@@ -25,6 +25,13 @@ import pandas as pd
 
 from src.config import PipelineConfig, generate_run_id
 
+# Configure JAX to use 64-bit precision (critical for PyMC compatibility)
+try:
+    import jax
+    jax.config.update("jax_enable_x64", True)
+except ImportError:
+    pass  # JAX not installed, skip configuration
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
