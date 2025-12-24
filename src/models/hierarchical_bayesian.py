@@ -497,15 +497,18 @@ def build_hierarchical_mmm(
 
 def fit_model(
     model: pm.Model,
-    draws: int = 2000,
-    tune: int = 1500,
-    chains: int = 4,
-    target_accept: float = 0.99,
-    max_treedepth: int = 15,
+    draws: int | None = None,
+    tune: int | None = None,
+    chains: int | None = None,
+    target_accept: float | None = None,
+    max_treedepth: int | None = None,
+    sampler: str | None = None,
     random_seed: int = 1991,
 ) -> az.InferenceData:
     """
     Fit model using NUTS sampler.
+    
+    All parameters default to values from src.config if not specified.
     
     Args:
         model: PyMC model
@@ -514,17 +517,35 @@ def fit_model(
         chains: Number of MCMC chains
         target_accept: Target acceptance rate
         max_treedepth: Maximum tree depth for NUTS
+        sampler: Sampler to use ("pymc" or "numpyro")
         random_seed: Random seed
     
     Returns:
         ArviZ InferenceData with posterior samples
     """
+    from src.config import (
+        MCMC_CHAINS,
+        MCMC_DRAWS,
+        MCMC_TUNE,
+        MCMC_TARGET_ACCEPT,
+        MCMC_MAX_TREEDEPTH,
+        MCMC_SAMPLER,
+    )
+    
+    draws = draws if draws is not None else MCMC_DRAWS
+    tune = tune if tune is not None else MCMC_TUNE
+    chains = chains if chains is not None else MCMC_CHAINS
+    target_accept = target_accept if target_accept is not None else MCMC_TARGET_ACCEPT
+    max_treedepth = max_treedepth if max_treedepth is not None else MCMC_MAX_TREEDEPTH
+    sampler = sampler if sampler is not None else MCMC_SAMPLER
+    
     with model:
         idata = pm.sample(
             draws=draws,
             tune=tune,
             chains=chains,
             target_accept=target_accept,
+            nuts_sampler=sampler,
             nuts_sampler_kwargs={"max_treedepth": max_treedepth},
             random_seed=random_seed,
             return_inferencedata=True,
@@ -532,6 +553,7 @@ def fit_model(
         )
     
     return idata
+
 
 
 # =============================================================================

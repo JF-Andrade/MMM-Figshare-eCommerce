@@ -126,13 +126,14 @@ HOLDOUT_WEEKS = 12
 
 # --- MCMC Settings ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 2000
+MCMC_DRAWS = 1000
 MCMC_TUNE = 1000
 MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 12
+MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)
 
 # --- Priors: Adstock (Geometric) ---
-L_MAX = 12                     # Maximum lag weeks
+L_MAX =  6                     # Maximum lag weeks
 PRIOR_ADSTOCK_ALPHA = 2        # Beta(alpha, beta) for decay rate
 PRIOR_ADSTOCK_BETA = 2
 PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.1  # Regional variation in adstock
