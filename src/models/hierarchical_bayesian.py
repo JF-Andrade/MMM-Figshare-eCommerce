@@ -540,13 +540,20 @@ def fit_model(
     sampler = sampler if sampler is not None else MCMC_SAMPLER
     
     with model:
+        sampler_kwargs = {}
+        if sampler == "numpyro":
+            # NumPyro uses 'max_tree_depth' instead of 'max_treedepth'
+            sampler_kwargs["max_tree_depth"] = max_treedepth
+        else:
+            sampler_kwargs["max_treedepth"] = max_treedepth
+            
         idata = pm.sample(
             draws=draws,
             tune=tune,
             chains=chains,
             target_accept=target_accept,
             nuts_sampler=sampler,
-            nuts_sampler_kwargs={"max_treedepth": max_treedepth},
+            nuts_sampler_kwargs=sampler_kwargs,
             random_seed=random_seed,
             return_inferencedata=True,
             idata_kwargs={"log_likelihood": True},
