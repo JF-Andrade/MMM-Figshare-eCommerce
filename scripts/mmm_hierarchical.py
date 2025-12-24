@@ -78,7 +78,6 @@ from src.models.hierarchical_bayesian import (
     predict as predict_custom,
     evaluate as evaluate_custom,
     compute_channel_contributions,
-    setup_gpu,
 )
 from src.model_insights import (
     extract_adstock_params,
@@ -142,10 +141,19 @@ def prepare_hierarchical_data(
     # 5. Log-transform target
     df_combined['y_log'] = np.log1p(df_combined[TARGET_COL])
 
-    # 8. Ensure consistent sorting before generating indices
+    # 6. Ensure consistent sorting before generating indices
     df_combined = df_combined.sort_values([GEO_COL, DATE_COL]).reset_index(drop=True)
+    
+    # VALIDATION: Verify monotonic dates within each territory (required for adstock)
+    for geo in df_combined[GEO_COL].unique():
+        geo_dates = df_combined.loc[df_combined[GEO_COL] == geo, DATE_COL]
+        if not geo_dates.is_monotonic_increasing:
+            raise ValueError(
+                f"Dates not monotonic for territory {geo}. "
+                "Adstock computation requires sorted data."
+            )
 
-    # 9. Create hierarchy indices
+    # 7. Create hierarchy indices
     territory_idx, currency_idx, territory_to_currency, territory_names, currency_names = create_hierarchy_indices(
         df_combined, geo_col=GEO_COL, currency_col='CURRENCY_CODE'
     )
@@ -501,7 +509,7 @@ def run_cv_fold(
             "X_season": m_data["X_season_test"],
             "territory_idx": m_data["territory_idx_test"],
             "currency_idx": m_data["currency_idx_test"],
-            "y_obs_data": np.zeros_like(m_data["y_test"]),
+            "y_obs_data": np.full_like(m_data["y_test"], np.nan),  # NaN for holdout
         })
         y_pred_test = predict_custom(model, idata)
     test_metrics = evaluate_custom(m_data["y_test_original"], y_pred_test)
@@ -666,7 +674,6 @@ def run_hierarchical(
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     # Setup
-    setup_gpu() # Returns if GPU is available
     az.style.use("arviz-darkgrid")
 
     # Load data - ALL currencies
@@ -744,6 +751,43 @@ def run_hierarchical(
         })
         print(f"Max R-hat: {diagnostics['max_rhat']:.3f}")
         print(f"Divergences: {diagnostics['divergences']}")
+        
+        # === Enhanced MLflow Logging ===
+        import tempfile
+        
+        # 1. Convergence summary table
+        try:
+            summary_df = az.summary(idata, var_names=[
+                "alpha_channel", "L_channel", "k_channel", 
+                "beta_channel", "tau", "sigma_obs"
+            ])
+            summary_dict = summary_df.to_dict()
+            mlflow.log_dict(summary_dict, "diagnostics/convergence_summary.json")
+            print("Logged convergence summary")
+        except Exception as e:
+            print(f"Warning: Could not log convergence summary: {e}")
+
+        # 2. Trace plots for key parameters
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                axes = az.plot_trace(idata, var_names=["alpha_channel", "L_channel", "beta_channel"])
+                trace_path = Path(tmpdir) / "trace_plots.png"
+                axes[0, 0].figure.savefig(trace_path, dpi=100, bbox_inches="tight")
+                mlflow.log_artifact(str(trace_path), "diagnostics")
+                print("Logged trace plots")
+        except Exception as e:
+            print(f"Warning: Could not log trace plots: {e}")
+
+        # 3. Energy plot (MCMC health check)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ax = az.plot_energy(idata)
+                energy_path = Path(tmpdir) / "energy_plot.png"
+                ax.figure.savefig(energy_path, dpi=100, bbox_inches="tight")
+                mlflow.log_artifact(str(energy_path), "diagnostics")
+                print("Logged energy plot")
+        except Exception as e:
+            print(f"Warning: Could not log energy plot: {e}")
 
         # 5. Evaluate (on training and test data)
         print("\nEvaluating on training data...")
@@ -768,7 +812,7 @@ def run_hierarchical(
                 "X_season": m_data["X_season_test"],
                 "territory_idx": m_data["territory_idx_test"],
                 "currency_idx": m_data["currency_idx_test"],
-                "y_obs_data": np.zeros_like(m_data["y_test"]),  # Dummy values for holdout
+                "y_obs_data": np.full_like(m_data["y_test"], np.nan),  # NaN for holdout
             })
             y_pred_log = predict_custom(model, idata)
 
@@ -791,27 +835,22 @@ def run_hierarchical(
         print("\nComputing contributions...")
         contrib_df = compute_channel_contributions(
             idata, 
-            m_data["X_spend_train"], 
+            m_data["X_spend_train"],
+            m_data["territory_idx_train"],
             m_data["channel_names"]
         )
-        # Add original spend for ROI
-        # Approximate ROI = contribution / (total spend in GBP or normalized?)
-        # For simplicity in this script, we'll log the raw contributions
+        # ROI is now computed correctly inside compute_channel_contributions
         mlflow.log_dict({"contributions": contrib_df.to_dict(orient="records")}, "deliverables/contributions.json")
 
         # Save deliverables (validated)
         run_id = mlflow.active_run().info.run_id
         
         # Aggregate ROI/Contribution for schema validation
-        # The schema expects spend, contribution, roi per channel
+        # The schema expects spend, contribution, roi per channel (now computed correctly)
         validated = validate_and_save_deliverables(
             run_id=run_id,
             metrics=combined_metrics,
-            roi_df=contrib_df.assign(
-                region="Global",
-                spend=contrib_df["total_spend"],
-                roi=contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
-            ),
+            roi_df=contrib_df.assign(region="Global", spend=contrib_df["total_spend"]),
             regions=regions,
             channels=m_data["channel_names"],
         )

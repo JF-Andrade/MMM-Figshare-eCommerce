@@ -24,25 +24,72 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# GPU Setup Utility
+# NumPy Helper Functions (for post-training analysis)
 # =============================================================================
 
 
-def setup_gpu() -> bool:
-    """Configure GPU backend for MCMC sampling if available."""
-    try:
-        import jax
+def geometric_adstock_numpy(
+    x: "NDArray",
+    alpha: "NDArray",
+    territory_idx: "NDArray",
+) -> "NDArray":
+    """
+    Apply geometric adstock in NumPy (for post-training contribution analysis).
+    
+    Args:
+        x: Spend array (n_obs, n_channels) or (n_obs,) for single channel
+        alpha: Decay rates per territory (n_territories, n_channels) or (n_territories,)
+        territory_idx: Territory index for each observation (n_obs,)
+    
+    Returns:
+        Adstocked values with same shape as x
+    """
+    if x.ndim == 1:
+        x = x.reshape(-1, 1)
+        squeeze_output = True
+    else:
+        squeeze_output = False
+    
+    n_obs, n_channels = x.shape
+    result = np.zeros_like(x)
+    result[0] = x[0]
+    
+    for t in range(1, n_obs):
+        if territory_idx[t] == territory_idx[t - 1]:
+            # Same territory: apply carryover
+            t_idx = territory_idx[t]
+            if alpha.ndim == 1:
+                decay = alpha[t_idx]
+            else:
+                decay = alpha[t_idx, :]
+            result[t] = x[t] + decay * result[t - 1]
+        else:
+            # Different territory: reset carryover
+            result[t] = x[t]
+    
+    return result.squeeze() if squeeze_output else result
 
-        devices = jax.devices()
-        print(f"JAX devices: {devices}")
 
-        import numpyro
-
-        numpyro.set_host_device_count(1)
-        return any("gpu" in str(d).lower() or "cuda" in str(d).lower() for d in devices)
-    except ImportError:
-        print("JAX/Numpyro not available, using CPU")
-        return False
+def hill_saturation_numpy(
+    x: "NDArray",
+    L: "NDArray",
+    k: "NDArray",
+) -> "NDArray":
+    """
+    Apply Hill saturation function in NumPy.
+    
+    Args:
+        x: Input values (adstocked spend)
+        L: Half-saturation point (per observation or scalar)
+        k: Steepness (per channel or scalar)
+    
+    Returns:
+        Saturated values in [0, 1]
+    """
+    eps = 1e-8
+    x_safe = np.maximum(x, eps)
+    L_safe = np.maximum(L, eps)
+    return np.power(x_safe, k) / (np.power(L_safe, k) + np.power(x_safe, k))
 
 
 # =============================================================================
@@ -182,7 +229,7 @@ def build_hierarchical_mmm(
         PRIOR_SIGMA_TERRITORY,
         PRIOR_BETA_CHANNEL_SIGMA,
         PRIOR_SIGMA_BETA_TERRITORY,
-        PRIOR_HORSESHOE_TAU_BETA,
+        PRIOR_HORSESHOE_M0,
         PRIOR_HORSESHOE_LAMBDA_BETA,
         PRIOR_GAMMA_SEASON_SIGMA,
         PRIOR_SIGMA_OBS,
@@ -271,16 +318,20 @@ def build_hierarchical_mmm(
         # BAYESIAN SATURATION (Learned L, k)
         # ============================================
         
-        L_channel = pm.HalfNormal(
+        # Non-centered parameterization for L (half-saturation)
+        L_channel_raw = pm.Normal("L_channel_raw", mu=0, sigma=1, dims="channel")
+        L_channel = pm.Deterministic(
             "L_channel",
-            sigma=PRIOR_SATURATION_L_SIGMA,
+            pt.abs(L_channel_raw) * PRIOR_SATURATION_L_SIGMA,
             dims="channel",
         )
         
-        k_channel = pm.Gamma(
+        # Non-centered parameterization for k (steepness) via log-normal
+        # log(k) ~ Normal(0.5, 0.5) => k ~ LogNormal with mean ~2, matching Gamma(2,1)
+        log_k_channel_raw = pm.Normal("log_k_channel_raw", mu=0, sigma=1, dims="channel")
+        k_channel = pm.Deterministic(
             "k_channel",
-            alpha=PRIOR_SATURATION_K_ALPHA,
-            beta=PRIOR_SATURATION_K_BETA,
+            pt.exp(log_k_channel_raw * 0.5 + 0.5),
             dims="channel",
         )
         
@@ -361,16 +412,33 @@ def build_hierarchical_mmm(
         channel_effect = pm.math.sum(territory_betas * X_saturated, axis=1)
         
         # ============================================
-        # FEATURE EFFECTS (Regularized with Horseshoe)
+        # FEATURE EFFECTS (Regularized Horseshoe - Piironen & Vehtari, 2017)
         # ============================================
         
-        tau = pm.HalfCauchy("tau", beta=PRIOR_HORSESHOE_TAU_BETA)
+        # Global shrinkage scale based on expected sparsity
+        m0 = PRIOR_HORSESHOE_M0  # Expected number of relevant features
+        D = n_features
+        tau0 = m0 / (D - m0 + 1e-8) * np.sqrt(2.0 / n_obs)
+        
+        tau = pm.HalfCauchy("tau", beta=tau0)
+        
+        # Slab variance for regularization (prevents extreme shrinkage)
+        c2 = pm.InverseGamma("c2", alpha=2, beta=1)
+        
+        # Local shrinkage per feature
         lambda_f = pm.HalfCauchy("lambda_f", beta=PRIOR_HORSESHOE_LAMBDA_BETA, dims="feature")
+        
+        # Regularized shrinkage (Finnish Horseshoe)
+        lambda_tilde = pm.Deterministic(
+            "lambda_tilde",
+            pt.sqrt(c2 * pt.sqr(lambda_f) / (c2 + pt.sqr(tau) * pt.sqr(lambda_f))),
+            dims="feature",
+        )
         
         beta_features = pm.Normal(
             "beta_features",
             mu=0,
-            sigma=tau * lambda_f,
+            sigma=tau * lambda_tilde,
             dims="feature",
         )
         
@@ -568,38 +636,68 @@ def evaluate(
 def compute_channel_contributions(
     idata: az.InferenceData,
     X_spend: "NDArray",
+    territory_idx: "NDArray",
     channel_names: list[str],
 ) -> pd.DataFrame:
     """
-    Compute channel contributions from posterior.
+    Compute channel contributions using learned transformations.
+    
+    CRITICAL: This function properly applies posterior mean adstock and saturation
+    transformations before computing contributions, avoiding the error of using
+    raw spend values directly.
+    
+    Args:
+        idata: ArviZ InferenceData with posterior samples
+        X_spend: Raw spend array (n_obs, n_channels)
+        territory_idx: Territory index for each observation (n_obs,)
+        channel_names: List of channel names
     
     Returns:
-        DataFrame with mean contribution per channel
+        DataFrame with contribution metrics per channel
     """
-    # Get posterior mean of channel betas
-    beta = idata.posterior["beta_channel"].mean(dim=["chain", "draw"]).values
+    # Extract posterior means
+    beta_channel = idata.posterior["beta_channel"].mean(dim=["chain", "draw"]).values
+    beta_territory = idata.posterior["beta_channel_territory"].mean(dim=["chain", "draw"]).values
+    alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
+    L_territory = idata.posterior["L_territory"].mean(dim=["chain", "draw"]).values
+    k_channel = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
     
-    # Get adstock alpha (learned)
-    alpha = idata.posterior["alpha_channel"].mean(dim=["chain", "draw"]).values
+    # Also get global alpha for summary
+    alpha_channel = idata.posterior["alpha_channel"].mean(dim=["chain", "draw"]).values
+    L_channel = idata.posterior["L_channel"].mean(dim=["chain", "draw"]).values
     
-    # Get saturation parameters (learned)
-    L = idata.posterior["L_channel"].mean(dim=["chain", "draw"]).values
-    k = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
+    n_obs, n_channels = X_spend.shape
+    contributions = np.zeros((n_obs, n_channels))
     
-    # Total spend per channel
+    # Apply transformations per channel using NumPy helpers
+    for c in range(n_channels):
+        # Apply territory-aware adstock
+        x_adstock = geometric_adstock_numpy(
+            X_spend[:, c],
+            alpha_territory[:, c],
+            territory_idx,
+        )
+        
+        # Apply saturation with territory-specific L and global k
+        L_obs = L_territory[territory_idx, c]
+        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
+        
+        # Compute contribution with territory-specific beta
+        for t in range(n_obs):
+            t_idx = territory_idx[t]
+            contributions[t, c] = (beta_channel[c] + beta_territory[t_idx, c]) * x_sat[t]
+    
+    # Aggregate per channel
+    total_contributions = contributions.sum(axis=0)
     total_spend = X_spend.sum(axis=0)
     
-    # Contribution = beta * total (approximate)
-    contributions = beta * total_spend
-    
-    df = pd.DataFrame({
+    return pd.DataFrame({
         "channel": channel_names,
-        "beta": beta,
-        "alpha_adstock": alpha,
-        "L_saturation": L,
-        "k_saturation": k,
+        "beta_mean": beta_channel,
+        "alpha_adstock": alpha_channel,
+        "L_saturation": L_channel,
+        "k_saturation": k_channel,
         "total_spend": total_spend,
-        "contribution": contributions,
+        "contribution": total_contributions,
+        "roi": total_contributions / (total_spend + 1e-8),
     })
-    
-    return df

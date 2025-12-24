@@ -7,7 +7,6 @@ from src.models.hierarchical_bayesian import (
     evaluate,
     check_convergence,
     compute_channel_contributions,
-    setup_gpu,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "evaluate",
     "check_convergence",
     "compute_channel_contributions",
-    "setup_gpu",
 ]

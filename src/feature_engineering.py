@@ -156,8 +156,12 @@ def engineer_features(
     - Rolling: 7-day std of spend (volatility)
     - Share: channel spend share
     """
-    df = compute_efficiency_metrics(df)
-    df = compute_cost_metrics(df)
+    # REMOVED: CTR and CPC features cause endogeneity issues
+    # CTR = Clicks/Impressions -> Clicks influenced by demand (endogenous)
+    # CPC = Spend/Clicks -> Directly derived from treatment variable
+    # df = compute_efficiency_metrics(df)
+    # df = compute_cost_metrics(df)
+    
     # compute_customer_metrics disabled: data leakage risk
     df = compute_temporal_features(df, date_col)
     # Rolling features removed to avoid multicollinearity

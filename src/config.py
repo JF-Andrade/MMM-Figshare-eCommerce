@@ -54,7 +54,11 @@ SPEND_COLS = [
 ]
 
 # Share Columns (from Spend)
-SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
+# NOTE: One share column (TIKTOK_SHARE) is dropped to avoid perfect multicollinearity
+# (shares sum to 1). TIKTOK serves as the reference category.
+_ALL_SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
+SHARE_COLS = _ALL_SHARE_COLS[:-1]  # Excludes TIKTOK_SHARE
+SHARE_REFERENCE_COL = _ALL_SHARE_COLS[-1]  # "TIKTOK_SHARE"
 
 # Control Variables
 CONTROL_COLS = ["trend", "is_holiday", "month", "week_of_year", "quarter", "is_q4"]
@@ -86,11 +90,14 @@ CPC_COLS = [
     "META_INSTAGRAM_CPC", "META_OTHER_CPC", "TIKTOK_CPC"
 ]
 
-# Final Feature Set for Modeling
-ALL_FEATURES = (
-    SPEND_COLS + SHARE_COLS + TRAFFIC_COLS + 
-    CONTROL_COLS + SEASON_COLS
-)
+# Endogenous features explicitly excluded from modeling
+ENDOGENOUS_COLS = CTR_COLS + CPC_COLS
+
+# Final Feature Set for Modeling (excluding endogenous variables)
+ALL_FEATURES = [
+    col for col in (SPEND_COLS + SHARE_COLS + TRAFFIC_COLS + CONTROL_COLS + SEASON_COLS)
+    if col not in ENDOGENOUS_COLS
+]
 
 # Regional defaults (baseline model)
 DEFAULT_CURRENCY = "GBP"
@@ -128,11 +135,11 @@ CV_RESUME_FROM_FOLD = 0  # Set > 0 to resume interrupted CV
 # =============================================================================
 
 # --- MCMC Settings ---
-MCMC_CHAINS = 2
-MCMC_DRAWS = 50
-MCMC_TUNE = 50
+MCMC_CHAINS = 4
+MCMC_DRAWS = 2000
+MCMC_TUNE = 1000
 MCMC_TARGET_ACCEPT = 0.85
-MCMC_MAX_TREEDEPTH = 18
+MCMC_MAX_TREEDEPTH = 12
 
 # --- Priors: Adstock (Geometric) ---
 L_MAX = 12                     # Maximum lag weeks
@@ -154,9 +161,12 @@ PRIOR_SIGMA_TERRITORY = 0.3  # Variation between territories within currency
 PRIOR_BETA_CHANNEL_SIGMA = 0.5     # HalfNormal sigma for channel betas
 PRIOR_SIGMA_BETA_TERRITORY = 0.05  # Regional variation in channel effects
 
-# --- Priors: Feature Effects (Horseshoe Regularization) ---
-PRIOR_HORSESHOE_TAU_BETA = 1     # HalfCauchy beta for global shrinkage
+# --- Priors: Feature Effects (Regularized Horseshoe - Piironen & Vehtari, 2017) ---
+# m0: Expected number of relevant (non-zero) features out of total auxiliary features
+# Higher m0 = weaker regularization, lower m0 = stronger regularization
+PRIOR_HORSESHOE_M0 = 20  # Expected ~20 relevant features out of ~40
 PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
+# Note: tau0 is computed dynamically based on m0, D, and n in the model
 
 # --- Priors: Seasonality ---
 PRIOR_GAMMA_SEASON_SIGMA = 0.3   # Normal sigma for seasonality
