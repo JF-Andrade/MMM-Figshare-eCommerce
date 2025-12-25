@@ -576,6 +576,8 @@ def plot_baseline_results(
     y_test,
     coef_df: pd.DataFrame,
     output_dir: Path,
+    dates_train: pd.Series | None = None,
+    dates_test: pd.Series | None = None,
 ) -> None:
     """
     Generate visualization plots for Ridge baseline model.
@@ -586,6 +588,8 @@ def plot_baseline_results(
         y_train, y_test: Target arrays.
         coef_df: Coefficients DataFrame from compute_ridge_coefficients.
         output_dir: Directory to save plots.
+        dates_train: Optional Series with training dates.
+        dates_test: Optional Series with testing dates.
     """
     output_dir.mkdir(exist_ok=True, parents=True)
 
@@ -593,15 +597,29 @@ def plot_baseline_results(
 
     y_pred_train = pipeline.predict(X_train)
     ax = axes[0, 0]
-    ax.plot(y_train, label="Actual", alpha=0.7)
-    ax.plot(y_pred_train, label="Predicted", alpha=0.7)
+    
+    if dates_train is not None:
+        ax.plot(dates_train, y_train, label="Actual", alpha=0.7)
+        ax.plot(dates_train, y_pred_train, label="Predicted", alpha=0.7)
+        ax.tick_params(axis='x', rotation=45)
+    else:
+        ax.plot(y_train, label="Actual", alpha=0.7)
+        ax.plot(y_pred_train, label="Predicted", alpha=0.7)
+        
     ax.set_title("Train: Actual vs Predicted")
     ax.legend()
 
     y_pred_test = pipeline.predict(X_test)
     ax = axes[0, 1]
-    ax.plot(y_test, label="Actual", alpha=0.7)
-    ax.plot(y_pred_test, label="Predicted", alpha=0.7)
+    
+    if dates_test is not None:
+        ax.plot(dates_test, y_test, label="Actual", alpha=0.7)
+        ax.plot(dates_test, y_pred_test, label="Predicted", alpha=0.7)
+        ax.tick_params(axis='x', rotation=45)
+    else:
+        ax.plot(y_test, label="Actual", alpha=0.7)
+        ax.plot(y_pred_test, label="Predicted", alpha=0.7)
+        
     ax.set_title("Test: Actual vs Predicted")
     ax.legend()
 
@@ -698,3 +716,158 @@ def plot_roi_heatmap(
 
     plt.savefig(output_dir / "hierarchical_roi_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close()
+
+
+# =============================================================================
+# HIERARCHICAL OPTIMIZATION (Standalone)
+# =============================================================================
+
+def optimize_hierarchical_budget(
+    contrib_df: pd.DataFrame,
+    saturation_params: list[dict],
+    total_budget: float,
+    budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
+) -> list[dict]:
+    """
+    Optimize budget allocation using learned attributes.
+    
+    Since we don't have the full PyMC model object easy to query for optimization,
+    we reconstruct the response curves using:
+    1. Current Spend & Contribution -> Estimate Scale Factor (Beta equivalent)
+    2. Saturation Lambda -> Shape of curve
+    
+    Model: Contribution = Scale * (1 - exp(-lambda * spend))
+    => Scale = Contribution / (1 - exp(-lambda * spend))
+    
+    Args:
+        contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
+        saturation_params: List of dicts with 'channel', 'lam_mean'.
+        total_budget: Total money to allocate.
+        budget_bounds_pct: Min/Max multiplier for individual channel spend (safety bounds).
+        
+    Returns:
+        List of dicts with 'channel', 'current_spend', 'optimal_spend', 'change_pct'.
+    """
+    from scipy.optimize import minimize, LinearConstraint, Bounds
+    
+    # 1. Prepare Data
+    model_data = []
+    lam_map = {p['channel']: p['lam_mean'] for p in saturation_params}
+    
+    channels = contrib_df['channel'].tolist()
+    
+    for _, row in contrib_df.iterrows():
+        ch = row['channel']
+        spend = row['total_spend']
+        contribution = row['contribution']
+        lam = lam_map.get(ch)
+        
+        if lam is None or spend <= 0 or contribution <= 0:
+            # Fallback for channels with no data/params
+            model_data.append({
+                'channel': ch,
+                'scale': 0,
+                'lam': 0,
+                'current_spend': spend
+            })
+            continue
+            
+        # Estimate Scale Factor A
+        # Contrib = A * (1 - exp(-lam * spend))
+        # A = Contrib / (1 - exp(-lam * spend))
+        # Note: If our model uses different saturation (e.g. Hill), this needs adjustment. 
+        # But our custom model uses exponential saturation.
+        saturation_factor = 1 - np.exp(-lam * spend)
+        scale = contribution / (saturation_factor + 1e-9)
+        
+        model_data.append({
+            'channel': ch,
+            'scale': scale,
+            'lam': lam,
+            'current_spend': spend
+        })
+        
+    # 2. Define Objective Function (Generic)
+    # Maximize Total Contribution (Minimize Negative)
+    def objective(spends):
+        total_contrib = 0
+        for i, x in enumerate(spends):
+            m = model_data[i]
+            if m['scale'] > 0:
+                total_contrib += m['scale'] * (1 - np.exp(-m['lam'] * x))
+        return -total_contrib
+
+    # 3. Constraints & Bounds
+    x0 = [m['current_spend'] for m in model_data]
+    
+    # Sum of spend = total_budget
+    # LinearConstraint: lb <= A.dot(x) <= ub
+    # A = [1, 1, ..., 1]
+    A_eq = np.ones((1, len(x0)))
+    linear_constraint = LinearConstraint(A_eq, [total_budget], [total_budget])
+    
+    # Channel Bounds
+    bounds_list = []
+    for m in model_data:
+        current = m['current_spend']
+        if current > 0:
+            lb = current * budget_bounds_pct[0]
+            ub = current * budget_bounds_pct[1]
+        else:
+            lb = 0
+            ub = 0 # Don't activate huge spend on zero-spend channels blindly
+        bounds_list.append((lb, ub))
+        
+    # 4. Optimize
+    result = minimize(
+        objective,
+        x0,
+        method='SLSQP',
+        constraints=[linear_constraint],
+        bounds=bounds_list,
+        options={'disp': False, 'ftol': 1e-4}
+    )
+    
+    # 5. Format Results
+    optimized_allocation = []
+    
+    # Calculate totals for lift
+    current_total_contrib = 0
+    optimal_total_contrib = 0
+    
+    for i, m in enumerate(model_data):
+        opt_spend = result.x[i] if result.success else m['current_spend']
+        current = m['current_spend']
+        
+        # Calculate contributions
+        if m['scale'] > 0:
+            curr_c = m['scale'] * (1 - np.exp(-m['lam'] * current))
+            opt_c = m['scale'] * (1 - np.exp(-m['lam'] * opt_spend))
+        else:
+            curr_c = 0
+            opt_c = 0
+            
+        current_total_contrib += curr_c
+        optimal_total_contrib += opt_c
+        
+        change_pct = ((opt_spend - current) / current * 100) if current > 0 else 0.0
+        
+        optimized_allocation.append({
+            "channel": m['channel'],
+            "current_spend": float(current),
+            "optimal_spend": float(opt_spend),
+            "change_pct": change_pct
+        })
+        
+    lift_absolute = optimal_total_contrib - current_total_contrib
+    lift_pct = (lift_absolute / current_total_contrib * 100) if current_total_contrib > 0 else 0.0
+        
+    return {
+        "allocation": optimized_allocation,
+        "metrics": {
+            "current_contribution": float(current_total_contrib),
+            "projected_contribution": float(optimal_total_contrib),
+            "lift_absolute": float(lift_absolute),
+            "lift_pct": float(lift_pct)
+        }
+    }

@@ -61,11 +61,14 @@ _ALL_SHARE_COLS = [c.replace("_SPEND", "_SHARE") for c in SPEND_COLS]
 SHARE_COLS = _ALL_SHARE_COLS[:-1]  # Excludes TIKTOK_SHARE
 SHARE_REFERENCE_COL = _ALL_SHARE_COLS[-1]  # "TIKTOK_SHARE"
 
-# Control Variables
-CONTROL_COLS = ["trend", "is_holiday", "month", "week_of_year", "quarter", "is_q4"]
+# Control Variables (removed month, week_of_year, quarter - redundant with SEASON_COLS)
+CONTROL_COLS = ["trend", "is_holiday", "is_q4", "is_black_friday"]
 
-# Seasonality Terms (Fourier)
-SEASON_COLS = ["sin_1", "cos_1", "sin_2", "cos_2"]
+# Seasonality Terms (Cyclic) - 1st and 2nd order Fourier harmonics
+SEASON_COLS = [
+    "WEEK_SIN", "WEEK_COS", "MONTH_SIN", "MONTH_COS",  # 1st order
+    "WEEK_SIN_2", "WEEK_COS_2", "MONTH_SIN_2", "MONTH_COS_2",  # 2nd order
+]
 
 # Non-paid Traffic (Exogenous Demand)
 TRAFFIC_COLS = [
@@ -118,7 +121,7 @@ YEARLY_SEASONALITY = 2  # Number of Fourier terms
 # 5. VALIDATION STRATEGY
 # =============================================================================
 
-HOLDOUT_WEEKS = 12
+HOLDOUT_WEEKS = 8
 
 # =============================================================================
 # 6. BAYESIAN MODEL CONFIGURATION (Hierarchical)
@@ -126,8 +129,8 @@ HOLDOUT_WEEKS = 12
 
 # --- MCMC Settings ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 1000
-MCMC_TUNE = 1000
+MCMC_DRAWS = 3000
+MCMC_TUNE = 1500
 MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 12
 MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)

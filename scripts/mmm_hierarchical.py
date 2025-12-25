@@ -55,7 +55,10 @@ from src.preprocessing import (
     apply_adstock_per_territory,
     apply_saturation_transform,
     create_hierarchy_indices,
-    add_fourier_seasonality,
+    apply_adstock_per_territory,
+    apply_saturation_transform,
+    create_hierarchy_indices,
+    compute_temporal_features,
     prepare_weekly_data,
 )
 from src.validation import get_panel_holdout_indices
@@ -112,8 +115,8 @@ def prepare_hierarchical_data(
         mask = df_combined[GEO_COL] == region
         df_combined.loc[mask, "trend"] = np.arange(mask.sum()) / (mask.sum() + 1)
 
-    # 3. Add Fourier seasonality (replaced simple sine/cosine)
-    df_combined = add_fourier_seasonality(df_combined, date_col=DATE_COL, n_terms=2)
+    # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
+    df_combined = compute_temporal_features(df_combined, date_col=DATE_COL)
 
     # 4. Normalize spend within currency
     df_combined = normalize_spend_by_currency(df_combined, SPEND_COLS)
@@ -175,8 +178,9 @@ def prepare_model_data(
     # RAW normalized spend (adstock/saturation applied inside model)
     spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df.columns]
     
-    # Seasonality Fourier terms
-    season_cols = [c for c in ["sin_1", "cos_1", "sin_2", "cos_2"] if c in df.columns]
+    # Seasonality Cyclic terms
+    from src.config import SEASON_COLS
+    season_cols = [c for c in SEASON_COLS if c in df.columns]
     
     # All other features (Efficiency, Cost, Customer, Trend, Holiday)
     excluded = [TARGET_COL, "y_log", DATE_COL, GEO_COL, "CURRENCY_CODE"] + spend_norm_cols + season_cols
@@ -241,6 +245,14 @@ def prepare_model_data(
     print(f" - Spend: {model_data['X_spend_train'].shape}")
     print(f" - Features: {model_data['X_features_train'].shape}")
     print(f" - Season: {model_data['X_season_train'].shape}")
+    
+    # Save datasets for inspection
+    inspect_dir = PROJECT_ROOT / "data" / "inspection"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    
+    df_train.to_parquet(inspect_dir / "hierarchical_train.parquet", index=False)
+    df_test.to_parquet(inspect_dir / "hierarchical_test.parquet", index=False)
+    print(f" - Saved inspection data to {inspect_dir}")
     
     return model_data
 
@@ -518,8 +530,103 @@ def run_hierarchical(
             m_data["territory_idx_train"],
             m_data["channel_names"]
         )
-        # ROI is now computed correctly inside compute_channel_contributions
+        # Add contribution percentage
+        contrib_df["contribution_pct"] = contrib_df["contribution"] / contrib_df["contribution"].sum()
+        
+        # Log contributions
         mlflow.log_dict({"contributions": contrib_df.to_dict(orient="records")}, "deliverables/contributions.json")
+
+        # Log ROI (re-using columns from contrib_df)
+        roi_data = contrib_df[["channel", "roi"]].to_dict(orient="records")
+        mlflow.log_dict({"roi": roi_data}, "deliverables/roi.json")
+        
+        # Log Regional Data
+        # Iterate over actual regions to compute specific metrics
+        print("\nComputing regional metrics...")
+        regional_data_list = []
+        
+        # In build logic, 'territory_idx' maps 0..N-1 to regions list order.
+        for r_idx, region_name in enumerate(regions):
+            try:
+                # Create mask for this region
+                mask = (m_data["territory_idx_train"] == r_idx)
+                if not np.any(mask):
+                    continue
+                    
+                # Filter data
+                X_sub = m_data["X_spend_train"][mask]
+                idx_sub = m_data["territory_idx_train"][mask]
+                
+                # Compute contributions for this region
+                # compute_channel_contributions handles the beta_territory lookup using idx_sub
+                reg_contrib_df = compute_channel_contributions(
+                    idata,
+                    X_sub,
+                    idx_sub,
+                    m_data["channel_names"]
+                )
+                
+                # Add percentage
+                if reg_contrib_df["contribution"].sum() > 0:
+                    reg_contrib_df["contribution_pct"] = reg_contrib_df["contribution"] / reg_contrib_df["contribution"].sum()
+                else:
+                    reg_contrib_df["contribution_pct"] = 0.0
+                
+                regional_data_list.append({
+                    "region": region_name,
+                    "channels": reg_contrib_df.to_dict(orient="records")
+                })
+            except Exception as e:
+                print(f"Warning: Failed to compute metrics for region {region_name}: {e}")
+
+        mlflow.log_dict({"regional": regional_data_list}, "deliverables/regional.json")
+        
+        # Log Adstock/Saturation Params
+        # NOTE: Model uses L_channel (half-saturation) and k_channel (steepness)
+        summary = az.summary(idata, var_names=["alpha_channel", "L_channel", "k_channel"])
+        adstock_params = []
+        saturation_params = []
+        
+        for i, channel in enumerate(m_data["channel_names"]):
+            try:
+                alpha = summary.loc[f"alpha_channel[{i}]", "mean"]
+                L = summary.loc[f"L_channel[{i}]", "mean"]
+                k = summary.loc[f"k_channel[{i}]", "mean"]
+                
+                adstock_params.append({"channel": channel, "alpha_mean": float(alpha)})
+                # Store L and k for saturation. For optimization, we use L as the scale factor.
+                saturation_params.append({
+                    "channel": channel, 
+                    "L_mean": float(L),  # Half-saturation point
+                    "k_mean": float(k),  # Steepness
+                    "lam_mean": float(1.0 / (L + 1e-8))  # Approximate lambda for old interface compatibility
+                })
+            except KeyError:
+                pass
+                
+        mlflow.log_dict({"adstock": adstock_params}, "deliverables/adstock.json")
+        mlflow.log_dict({"saturation": saturation_params}, "deliverables/saturation.json")
+
+
+        # Log Optimization
+        # Calculate total spend from contribution dataframe
+        total_budget_current = contrib_df["total_spend"].sum()
+        
+        # Optimize budget (reallocate within +/- 30% bounds)
+        from src.insights import optimize_hierarchical_budget
+        optimization_result = optimize_hierarchical_budget(
+            contrib_df=contrib_df,
+            saturation_params=saturation_params,
+            total_budget=total_budget_current,
+            budget_bounds_pct=(0.70, 1.30)
+        )
+        
+        # Extract results
+        optimization_data = optimization_result["allocation"]
+        lift_metrics = optimization_result["metrics"]
+        
+        mlflow.log_dict({"optimization": optimization_data}, "deliverables/optimization.json")
+        mlflow.log_dict({"revenue_lift": lift_metrics}, "deliverables/revenue_lift.json")
 
         # Save deliverables (validated)
         run_id = mlflow.active_run().info.run_id

@@ -14,7 +14,7 @@ from mlflow import MlflowClient
 
 # Default MLflow configuration
 MLFLOW_TRACKING_URI = "file:./mlruns"
-EXPERIMENT_NAME = "MMM_Experiments"
+EXPERIMENT_NAME = "MMM-Experiments"
 
 
 def get_mlflow_client(tracking_uri: str | None = None) -> MlflowClient:
@@ -45,7 +45,7 @@ def get_latest_hierarchical_run(client: MlflowClient | None = None) -> dict:
 
     runs = client.search_runs(
         experiment_ids=[experiment_id],
-        filter_string="params.model_type = 'hierarchical'",
+        filter_string="params.model_type LIKE '%hierarchical%'",
         order_by=["start_time DESC"],
         max_results=1,
     )
@@ -85,7 +85,10 @@ def get_all_runs(client: MlflowClient | None = None, model_type: str | None = No
 
     filter_string = ""
     if model_type:
-        filter_string = f"params.model_type = '{model_type}'"
+        if model_type == "hierarchical":
+            filter_string = "params.model_type LIKE '%hierarchical%'"
+        else:
+            filter_string = f"params.model_type = '{model_type}'"
 
     runs = client.search_runs(
         experiment_ids=[experiment_id],

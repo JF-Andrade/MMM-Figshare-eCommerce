@@ -187,7 +187,8 @@ def render_roi_tab(deliverables: dict):
             st.markdown("**Channel Contribution Share**")
             contrib_df = pd.DataFrame(contributions)
             contrib_df = contrib_df.set_index("channel")
-            st.bar_chart(contrib_df["contribution_pct"])
+            col_to_plot = "contribution_pct" if "contribution_pct" in contrib_df.columns else "contribution"
+            st.bar_chart(contrib_df[col_to_plot])
 
 
 def render_optimization_tab(deliverables: dict):

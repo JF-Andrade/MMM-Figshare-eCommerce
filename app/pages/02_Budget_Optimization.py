@@ -57,19 +57,25 @@ def main():
     metrics = []
 
     if lift:
+        # Handle both old format (current_revenue) and new format (current_contribution)
+        current = lift.get('current_revenue') or lift.get('current_contribution', 0)
+        projected = lift.get('optimal_revenue') or lift.get('projected_contribution', 0)
+        lift_pct = lift.get('lift_pct', 0)
+        lift_abs = lift.get('lift_absolute', 0)
+        
         metrics.append({
-            "label": "Current Revenue",
-            "value": f"{lift['current_revenue']:,.0f}",
+            "label": "Current Contribution",
+            "value": f"{current:,.0f}",
         })
         metrics.append({
-            "label": "Projected Optimal Revenue",
-            "value": f"{lift['optimal_revenue']:,.0f}",
-            "delta": f"+{lift['lift_pct']:.1f}%",
+            "label": "Projected Optimal Contribution",
+            "value": f"{projected:,.0f}",
+            "delta": f"+{lift_pct:.1f}%",
         })
         metrics.append({
-            "label": "Revenue Lift",
-            "value": f"{lift['lift_absolute']:,.0f}",
-            "delta": f"{lift['lift_pct']:.1f}%",
+            "label": "Contribution Lift",
+            "value": f"{lift_abs:,.0f}",
+            "delta": f"{lift_pct:.1f}%",
         })
 
     if metrics:

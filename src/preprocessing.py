@@ -776,11 +776,22 @@ def prepare_baseline_features(
         channel_max_dict[c] = train_max
         feature_cols.append(col_sat)
 
-    control_cols = ["trend"]
-    if "is_holiday" in df.columns:
-        control_cols.append("is_holiday")
-
-    feature_cols.extend(control_cols)
+    from src.config import CONTROL_COLS, SEASON_COLS, TRAFFIC_COLS
+    
+    # Add Control Variables
+    for col in CONTROL_COLS:
+        if col in df.columns:
+            feature_cols.append(col)
+            
+    # Add Seasonality Variables
+    for col in SEASON_COLS:
+        if col in df.columns:
+            feature_cols.append(col)
+            
+    # Add Traffic Variables (exogenous demand)
+    for col in TRAFFIC_COLS:
+        if col in df.columns:
+            feature_cols.append(col)
 
     X = df[feature_cols].fillna(0)
 
@@ -814,9 +825,45 @@ def compute_temporal_features(
     
     if date_col in df.columns:
         date = pd.to_datetime(df[date_col])
+        
+        # Linear features (normalized 0-1)
         df["DAY_OF_WEEK"] = date.dt.dayofweek / 6
         df["QUARTER"] = date.dt.quarter / 4
         df["WEEK_OF_YEAR"] = date.dt.isocalendar().week / 52
+        
+        # Cyclic features (Sine/Cosine) - Better for seasonality
+        # Week of Year (Period = 52) - 1st Order
+        week = date.dt.isocalendar().week
+        df["WEEK_SIN"] = np.sin(2 * np.pi * week / 52)
+        df["WEEK_COS"] = np.cos(2 * np.pi * week / 52)
+        
+        # Week of Year - 2nd Order (captures bi-annual patterns)
+        df["WEEK_SIN_2"] = np.sin(4 * np.pi * week / 52)
+        df["WEEK_COS_2"] = np.cos(4 * np.pi * week / 52)
+        
+        # Month (Period = 12) - 1st Order
+        month = date.dt.month
+        df["MONTH_SIN"] = np.sin(2 * np.pi * month / 12)
+        df["MONTH_COS"] = np.cos(2 * np.pi * month / 12)
+        
+        # Month - 2nd Order (captures bi-monthly patterns)
+        df["MONTH_SIN_2"] = np.sin(4 * np.pi * month / 12)
+        df["MONTH_COS_2"] = np.cos(4 * np.pi * month / 12)
+
+        
+        # Black Friday Indicator (Week containing Nov 23-29 range)
+        # Black Friday is the day after 4th Thursday. Earliest is Nov 23, Latest is Nov 29.
+        # We flag the week that overlaps with this period.
+        def check_black_friday(d):
+            # Check if date is in November
+            if d.month == 11:
+                # Check for the specific date window
+                if 23 <= d.day <= 29:
+                    return 1
+            return 0
+
+        # Vectorized check is faster than apply for large data
+        df["is_black_friday"] = ((date.dt.month == 11) & (date.dt.day >= 23) & (date.dt.day <= 29)).astype(int)
     
     return df
 

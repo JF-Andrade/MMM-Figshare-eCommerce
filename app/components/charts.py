@@ -57,9 +57,12 @@ def contribution_pie_chart(contributions: list[dict], title: str = "Channel Cont
     """
     df = pd.DataFrame(contributions)
 
+    # Fallback if contribution_pct is missing (use raw contribution)
+    value_col = "contribution_pct" if "contribution_pct" in df.columns else "contribution"
+
     fig = px.pie(
         df,
-        values="contribution_pct",
+        values=value_col,
         names="channel",
         title=title,
         hole=0.4,

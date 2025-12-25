@@ -102,40 +102,58 @@ def run_ridge_baseline(
     df = load_data(data_path, currency=DEFAULT_CURRENCY)
     df_weekly = prepare_weekly_data(df, region=region or TARGET_TERRITORY)
 
-    # Compute train end index BEFORE feature preparation
-    train_end_idx = len(df_weekly) - HOLDOUT_WEEKS
-
+    # Compute train end index for FINAL evaluation (not for optimization loop)
+    # The optimization loop will use its own internal CV splits on the development set
+    dev_end_idx = len(df_weekly) - HOLDOUT_WEEKS
+    train_end_idx = dev_end_idx  # Alias for compatibility with rest of script
+    df_dev = df_weekly.iloc[:dev_end_idx].copy()
+    
     # --- Bayesian Optimization for Hyperparameters ---
     print(f"\n2. Bayesian Search ({BAYESIAN_N_CALLS} iterations)...")
+    print(f"   Strategy: Expanding Window CV (5 splits) on {len(df_dev)} weeks of data.")
     
+    from sklearn.model_selection import TimeSeriesSplit
+
     def objective(params):
         decay, sat_half, alpha = params
         
-        X, y, channels, y_scaler, channel_max = prepare_baseline_features(
-            df_weekly, 
+        # Prepare features on the DEVELOPMENT set (everything except final holdout)
+        # We apply transformations here. Since adstock is causal, it's safe to split later.
+        X, y, _, _, _ = prepare_baseline_features(
+            df_dev, 
             adstock_decay=decay,
             saturation_half=sat_half,
             spend_cols=SPEND_COLS,
             target_col=TARGET_COL,
             min_nonzero_ratio=MIN_NONZERO_RATIO,
             min_spend_threshold=MIN_SPEND_THRESHOLD,
-            train_end_idx=train_end_idx,
+            train_end_idx=len(df_dev), # Use full dev set for preparation
             verbose=False,
         )
         
-        X_train_obj = X.iloc[:train_end_idx]
-        X_test_obj = X.iloc[train_end_idx:]
-        y_train_obj = y[:train_end_idx]
-        y_test_obj = y[train_end_idx:]
+        # Expanding Window Cross-Validation
+        # 5 splits means we test on 5 distinct future periods relative to growing pasts
+        tscv = TimeSeriesSplit(n_splits=5)
+        scores = []
         
-        pipeline = Pipeline([
-            ("scaler", StandardScaler()),
-            ("ridge", Ridge(alpha=alpha)),
-        ])
-        pipeline.fit(X_train_obj, y_train_obj)
-        
-        # Negative R² for minimization
-        return -pipeline.score(X_test_obj, y_test_obj)
+        for train_index, test_index in tscv.split(X):
+            # X is a DataFrame, so .iloc works.
+            # y is a numpy array, so we must use direct indexing.
+            X_train_cv, X_test_cv = X.iloc[train_index], X.iloc[test_index]
+            y_train_cv, y_test_cv = y[train_index], y[test_index]
+            
+            pipeline = Pipeline([
+                ("scaler", StandardScaler()),
+                ("ridge", Ridge(alpha=alpha)),
+            ])
+            
+            pipeline.fit(X_train_cv, y_train_cv)
+            scores.append(pipeline.score(X_test_cv, y_test_cv))
+            
+        # Return negative mean R2 (minimize negative R2 = maximize R2)
+        # We use mean to find stable parameters across time
+        mean_score = np.mean(scores)
+        return -mean_score
 
     search_space = [
         Real(*BAYESIAN_ADSTOCK_BOUNDS, prior="log-uniform", name="adstock_decay"),
@@ -174,6 +192,28 @@ def run_ridge_baseline(
     X_test = X.iloc[train_end_idx:]
     y_train = y[:train_end_idx]
     y_test = y[train_end_idx:]
+    
+    # Extract dates for plotting
+    dates = pd.to_datetime(df_weekly[DATE_COL])
+    dates_train = dates.iloc[:train_end_idx]
+    dates_test = dates.iloc[train_end_idx:]
+    
+    # Save datasets for inspection
+    inspect_dir = PROJECT_ROOT / "data" / "inspection"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Combine X and y for easier inspection
+    train_inspect = X_train.copy()
+    train_inspect["target"] = y_train
+    train_inspect["date"] = dates_train.values
+    
+    test_inspect = X_test.copy()
+    test_inspect["target"] = y_test
+    test_inspect["date"] = dates_test.values
+    
+    train_inspect.to_parquet(inspect_dir / "baseline_train.parquet", index=False)
+    test_inspect.to_parquet(inspect_dir / "baseline_test.parquet", index=False)
+    print(f"Saved inspection data to {inspect_dir}")
 
     # Train final model
     pipeline, training_time = train_ridge_model(X_train, y_train, alpha=best_alpha)
@@ -222,7 +262,17 @@ def run_ridge_baseline(
 
         # Plots
         print("\n5. Generating plots...")
-        plot_baseline_results(pipeline, X_train, X_test, y_train, y_test, coef_df, output_dir)
+        plot_baseline_results(
+            pipeline, 
+            X_train, 
+            X_test, 
+            y_train, 
+            y_test, 
+            coef_df, 
+            output_dir,
+            dates_train=dates_train,
+            dates_test=dates_test
+        )
         mlflow.log_artifact(output_dir / "ridge_baseline_results.png")
 
         # Save locally
