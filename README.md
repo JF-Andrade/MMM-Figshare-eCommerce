@@ -210,9 +210,9 @@ All priors are externalized to `src/config.py` for easy tuning.
 - **Temporal Holdout**: Last 8 weeks held out for validation
 - **Convergence Diagnostics**: R-hat < 1.01, ESS > 400, BFMI > 0.3, Zero divergences
 - **Metrics**: R², MAE, SMAPE (symmetric MAPE)
-- **Model Comparison**:
-  - **Ridge Baseline**: `TimeSeriesSplit` (5 folds, gap=2) for hyperparameter tuning.
-  - **Hierarchical Bayesian**: LOO-CV via PSIS (Pareto Smoothed Importance Sampling) + WAIC.
+- **Cross-Validation**:
+  - **Ridge Baseline**: `TimeSeriesSplit` (5 folds) preventing data leakage.
+  - **Hierarchical**: Expanding window CV (Module available in `src/validation.py`).
 
 ---
 
@@ -248,7 +248,7 @@ MMM-Figshare-eCommerce/
 │   ├── insights.py            # Budget optimization, parameter extraction
 │   ├── comparison.py          # Model comparison utilities
 │   ├── schemas.py             # Pydantic data schemas
-│   └── validation.py          # Time-series holdout utilities
+│   └── validation.py          # Expanding window CV module
 │
 ├── app/
 │   ├── dashboard.py           # Streamlit main entry point
@@ -324,10 +324,13 @@ python scripts/run_pipeline.py --dry-run
 ### Direct Script Execution
 
 ```bash
-# Baseline model (~15 min)
+# Baseline model (single holdout, ~15 min)
 python scripts/mmm_baseline.py
 
-# Hierarchical model (includes LOO-CV)
+# Baseline with expanding window CV (~45 min)
+python scripts/mmm_baseline.py --cv
+
+# Hierarchical model only
 python scripts/mmm_hierarchical.py
 ```
 

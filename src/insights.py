@@ -747,84 +747,88 @@ def optimize_hierarchical_budget(
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
 ) -> list[dict]:
     """
-    Optimize budget allocation using learned attributes.
+    Optimize budget allocation using learned Hill saturation parameters.
     
-    Without the full PyMC model object available for optimization,
-    response curves are reconstructed using:
+    Response curves are reconstructed using:
     1. Current Spend & Contribution -> Estimate Scale Factor (Beta equivalent)
-    2. Saturation Lambda -> Shape of curve
+    2. Hill Saturation params (L, k) -> Shape of curve
     
-    Model: Contribution = Scale * (1 - exp(-lambda * spend))
-    => Scale = Contribution / (1 - exp(-lambda * spend))
+    Model: Contribution = Scale * (spend^k / (L^k + spend^k))
+    => Scale = Contribution / (spend^k / (L^k + spend^k))
     
     Args:
         contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
-        saturation_params: List of dicts with 'channel', 'lam_mean'.
+        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
         total_budget: Total money to allocate.
-        budget_bounds_pct: Min/Max multiplier for individual channel spend (safety bounds).
+        budget_bounds_pct: Min/Max multiplier for individual channel spend.
         
     Returns:
-        List of dicts with 'channel', 'current_spend', 'optimal_spend', 'change_pct'.
+        Dict with 'allocation' and 'metrics'.
     """
-    from scipy.optimize import minimize, LinearConstraint, Bounds
+    from scipy.optimize import minimize, LinearConstraint
     
-    # 1. Prepare Data
+    def hill_saturation(x, L, k):
+        """Hill saturation function: x^k / (L^k + x^k)."""
+        eps = 1e-8
+        x_safe = max(x, eps)
+        L_safe = max(L, eps)
+        return (x_safe ** k) / (L_safe ** k + x_safe ** k + eps)
+    
+    # 1. Prepare Data - extract L and k from saturation params
     model_data = []
-    lam_map = {p['channel']: p['lam_mean'] for p in saturation_params}
-    
-    channels = contrib_df['channel'].tolist()
+    param_map = {p['channel']: p for p in saturation_params}
     
     for _, row in contrib_df.iterrows():
         ch = row['channel']
         spend = row['total_spend']
         contribution = row['contribution']
-        lam = lam_map.get(ch)
+        params = param_map.get(ch, {})
         
-        if lam is None or spend <= 0 or contribution <= 0:
-            # Fallback for channels with no data/params
+        L = params.get('L_mean', 0.3)  # Default if missing
+        k = params.get('k_mean', 2.0)  # Default if missing
+        
+        if spend <= 0 or contribution <= 0:
             model_data.append({
                 'channel': ch,
                 'scale': 0,
-                'lam': 0,
+                'L': L,
+                'k': k,
                 'current_spend': spend
             })
             continue
-            
-        # Estimate Scale Factor A
-        # Contrib = A * (1 - exp(-lam * spend))
-        # A = Contrib / (1 - exp(-lam * spend))
-        # Note: If model uses different saturation (e.g. Hill), this needs adjustment. 
-        # The custom model uses exponential saturation.
-        saturation_factor = 1 - np.exp(-lam * spend)
-        scale = contribution / (saturation_factor + 1e-9)
+        
+        # Estimate Scale Factor using Hill saturation
+        # Contrib = Scale * hill_sat(spend, L, k)
+        # Scale = Contrib / hill_sat(spend, L, k)
+        sat_current = hill_saturation(spend, L, k)
+        scale = contribution / (sat_current + 1e-9)
         
         model_data.append({
             'channel': ch,
             'scale': scale,
-            'lam': lam,
+            'L': L,
+            'k': k,
             'current_spend': spend
         })
-        
-    # 2. Define Objective Function (Generic)
-    # Maximize Total Contribution (Minimize Negative)
+    
+    # 2. Objective Function using Hill saturation
     def objective(spends):
         total_contrib = 0
         for i, x in enumerate(spends):
             m = model_data[i]
             if m['scale'] > 0:
-                total_contrib += m['scale'] * (1 - np.exp(-m['lam'] * x))
-        return -total_contrib
-
+                sat = hill_saturation(x, m['L'], m['k'])
+                total_contrib += m['scale'] * sat
+        return -total_contrib  # Minimize negative = maximize
+    
     # 3. Constraints & Bounds
     x0 = [m['current_spend'] for m in model_data]
     
-    # Sum of spend = total_budget
-    # LinearConstraint: lb <= A.dot(x) <= ub
-    # A = [1, 1, ..., 1]
+    # Sum constraint: total spend = budget
     A_eq = np.ones((1, len(x0)))
     linear_constraint = LinearConstraint(A_eq, [total_budget], [total_budget])
     
-    # Channel Bounds
+    # Channel bounds
     bounds_list = []
     for m in model_data:
         current = m['current_spend']
@@ -832,10 +836,9 @@ def optimize_hierarchical_budget(
             lb = current * budget_bounds_pct[0]
             ub = current * budget_bounds_pct[1]
         else:
-            lb = 0
-            ub = 0 # Don't activate huge spend on zero-spend channels blindly
+            lb, ub = 0, 0
         bounds_list.append((lb, ub))
-        
+    
     # 4. Optimize
     result = minimize(
         objective,
@@ -843,13 +846,11 @@ def optimize_hierarchical_budget(
         method='SLSQP',
         constraints=[linear_constraint],
         bounds=bounds_list,
-        options={'disp': False, 'ftol': 1e-4}
+        options={'disp': False, 'ftol': 1e-6}
     )
     
     # 5. Format Results
     optimized_allocation = []
-    
-    # Calculate totals for lift
     current_total_contrib = 0
     optimal_total_contrib = 0
     
@@ -857,14 +858,12 @@ def optimize_hierarchical_budget(
         opt_spend = result.x[i] if result.success else m['current_spend']
         current = m['current_spend']
         
-        # Calculate contributions
         if m['scale'] > 0:
-            curr_c = m['scale'] * (1 - np.exp(-m['lam'] * current))
-            opt_c = m['scale'] * (1 - np.exp(-m['lam'] * opt_spend))
+            curr_c = m['scale'] * hill_saturation(current, m['L'], m['k'])
+            opt_c = m['scale'] * hill_saturation(opt_spend, m['L'], m['k'])
         else:
-            curr_c = 0
-            opt_c = 0
-            
+            curr_c, opt_c = 0, 0
+        
         current_total_contrib += curr_c
         optimal_total_contrib += opt_c
         
@@ -874,12 +873,12 @@ def optimize_hierarchical_budget(
             "channel": m['channel'],
             "current_spend": float(current),
             "optimal_spend": float(opt_spend),
-            "change_pct": change_pct
+            "change_pct": float(change_pct)
         })
-        
+    
     lift_absolute = optimal_total_contrib - current_total_contrib
     lift_pct = (lift_absolute / current_total_contrib * 100) if current_total_contrib > 0 else 0.0
-        
+    
     return {
         "allocation": optimized_allocation,
         "metrics": {
@@ -889,3 +888,4 @@ def optimize_hierarchical_budget(
             "lift_pct": float(lift_pct)
         }
     }
+
