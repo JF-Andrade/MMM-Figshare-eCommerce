@@ -722,3 +722,90 @@ def compute_channel_contributions(
         "contribution": total_contributions,
         "roi": total_contributions / (total_spend + 1e-8),
     })
+
+
+def compute_roi_with_hdi(
+    idata: az.InferenceData,
+    X_spend: "NDArray",
+    territory_idx: "NDArray",
+    channel_names: list[str],
+    hdi_prob: float = 0.94,
+    n_samples: int = 500,
+) -> pd.DataFrame:
+    """
+    Compute ROI with uncertainty intervals using posterior samples.
+    
+    Unlike compute_channel_contributions (which uses posterior means),
+    this function samples from the posterior to provide HDI intervals.
+    
+    Args:
+        idata: ArviZ InferenceData with posterior samples
+        X_spend: Raw spend array (n_obs, n_channels)
+        territory_idx: Territory index for each observation (n_obs,)
+        channel_names: List of channel names
+        hdi_prob: HDI probability (default 0.94)
+        n_samples: Number of posterior samples to use
+    
+    Returns:
+        DataFrame with ROI mean and HDI bounds per channel
+    """
+    # Stack posterior samples: (chain, draw, ...) -> (n_samples, ...)
+    beta_all = idata.posterior["beta_channel"].values
+    n_chains, n_draws, n_channels = beta_all.shape
+    total_samples = n_chains * n_draws
+    
+    # Subsample if needed
+    sample_idx = np.random.choice(total_samples, size=min(n_samples, total_samples), replace=False)
+    
+    # Reshape all parameters
+    beta_flat = beta_all.reshape(total_samples, n_channels)
+    beta_terr_flat = idata.posterior["beta_channel_territory"].values.reshape(total_samples, -1, n_channels)
+    alpha_terr_flat = idata.posterior["alpha_territory"].values.reshape(total_samples, -1, n_channels)
+    L_terr_flat = idata.posterior["L_territory"].values.reshape(total_samples, -1, n_channels)
+    k_flat = idata.posterior["k_channel"].values.reshape(total_samples, n_channels)
+    
+    n_obs = X_spend.shape[0]
+    total_spend = X_spend.sum(axis=0)
+    
+    # Store ROI per sample per channel
+    roi_samples = np.zeros((len(sample_idx), n_channels))
+    
+    for s_i, s in enumerate(sample_idx):
+        contributions = np.zeros(n_channels)
+        
+        for c in range(n_channels):
+            # Apply adstock with sampled alpha
+            x_adstock = geometric_adstock_numpy(
+                X_spend[:, c],
+                alpha_terr_flat[s, :, c],
+                territory_idx,
+            )
+            
+            # Apply saturation with sampled L, k
+            L_obs = L_terr_flat[s, territory_idx, c]
+            x_sat = hill_saturation_numpy(x_adstock, L_obs, k_flat[s, c])
+            
+            # Sum contribution across observations
+            for t in range(n_obs):
+                t_idx = territory_idx[t]
+                beta_eff = beta_flat[s, c] + beta_terr_flat[s, t_idx, c]
+                contributions[c] += beta_eff * x_sat[t]
+        
+        # ROI for this sample
+        roi_samples[s_i, :] = contributions / (total_spend + 1e-8)
+    
+    # Compute statistics
+    roi_mean = roi_samples.mean(axis=0)
+    hdi_low_pct = (100 - hdi_prob * 100) / 2
+    hdi_high_pct = 100 - hdi_low_pct
+    roi_hdi_low = np.percentile(roi_samples, hdi_low_pct, axis=0)
+    roi_hdi_high = np.percentile(roi_samples, hdi_high_pct, axis=0)
+    
+    return pd.DataFrame({
+        "channel": channel_names,
+        "roi_mean": roi_mean,
+        "roi_hdi_low": roi_hdi_low,
+        "roi_hdi_high": roi_hdi_high,
+        "total_spend": total_spend,
+    })
+
