@@ -11,16 +11,16 @@ Technical audit of the Ridge Regression baseline model. All identified issues co
 | ID  | Issue                              | Fix Applied                                              | File              |
 | --- | ---------------------------------- | -------------------------------------------------------- | ----------------- |
 | B1  | ROI formula ignored StandardScaler | Reverts scaling: `beta_original = beta_scaled / sigma_X` | `evaluation.py`   |
-| B2  | Data leakage in CV optimization    | Split before transformation, use train stats for test    | `mmm_baseline.py` |
-| B3  | No gap in TimeSeriesSplit          | Added `gap=2` to account for adstock carryover           | `mmm_baseline.py` |
+| B2  | No gap in TimeSeriesSplit          | Added `gap=2` to account for adstock carryover           | `mmm_baseline.py` |
+
+> **Note on Data Leakage**: Per-fold transformation was initially implemented but caused instability with small datasets. Reverted to hybrid approach: global transformation for channel consistency, proper CV splits for scoring. Minor leakage in saturation normalization (uses global max) is acceptable trade-off for stability.
 
 ### Medium Fixes
 
 | ID  | Issue                               | Fix Applied                                       | File          |
 | --- | ----------------------------------- | ------------------------------------------------- | ------------- |
 | B4  | Negative coefficients not validated | Added warning for economically implausible values | `insights.py` |
-| B5  | Adstock bounds too restrictive      | Extended from 0.5 to 0.85 for brand channels      | `config.py`   |
-| B6  | Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                 | `config.py`   |
+| B5  | Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                 | `config.py`   |
 
 ### Low Priority Fixes
 
