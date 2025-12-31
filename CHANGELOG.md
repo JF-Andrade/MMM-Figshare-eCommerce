@@ -2,6 +2,24 @@
 
 All notable changes to the hierarchical MMM model.
 
+## [2025-12-31] LOO-CV and Documentation Update
+
+### New Features
+
+| Feature              | Description                                 | File                  |
+| -------------------- | ------------------------------------------- | --------------------- |
+| LOO-CV               | Added PSIS-LOO cross-validation via ArviZ   | `mmm_hierarchical.py` |
+| WAIC                 | Added WAIC computation for model comparison | `mmm_hierarchical.py` |
+| Pareto-k diagnostics | Warns when Pareto k > 0.7                   | `mmm_hierarchical.py` |
+
+### Documentation Fixes
+
+- Removed incorrect references to "expanding window CV" (was not implemented)
+- Removed non-existent `--cv` flag from usage examples
+- Updated validation.py description from "CV module" to "holdout utilities"
+
+---
+
 ## [2025-12-31] Ridge Baseline Audit & Fixes
 
 Technical audit of the Ridge Regression baseline model. All identified issues corrected.

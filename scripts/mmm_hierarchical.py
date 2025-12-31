@@ -477,6 +477,44 @@ def run_hierarchical(
         print(f"Max R-hat: {diagnostics['max_rhat']:.3f}")
         print(f"Divergences: {diagnostics['divergences']}")
         
+        # LOO-CV via ArviZ (PSIS - Pareto Smoothed Importance Sampling)
+        print("\nComputing LOO-CV and WAIC...")
+        try:
+            loo_result = az.loo(idata, pointwise=True)
+            waic_result = az.waic(idata, pointwise=True)
+            
+            loo_elpd = float(loo_result.elpd_loo)
+            loo_se = float(loo_result.se)
+            loo_p = float(loo_result.p_loo)
+            waic_elpd = float(waic_result.elpd_waic)
+            
+            mlflow.log_metrics({
+                "loo_elpd": loo_elpd,
+                "loo_se": loo_se,
+                "loo_p_eff": loo_p,
+                "waic_elpd": waic_elpd,
+            })
+            
+            # Check Pareto k diagnostics (k > 0.7 indicates problematic observations)
+            pareto_k = loo_result.pareto_k.values
+            n_bad_k = int(np.sum(pareto_k > 0.7))
+            pct_bad_k = 100 * n_bad_k / len(pareto_k)
+            
+            mlflow.log_metrics({
+                "loo_n_bad_pareto_k": n_bad_k,
+                "loo_pct_bad_pareto_k": pct_bad_k,
+            })
+            
+            print(f"LOO-CV ELPD: {loo_elpd:.1f} ± {loo_se:.1f}")
+            print(f"WAIC ELPD: {waic_elpd:.1f}")
+            if n_bad_k > 0:
+                print(f"⚠️ {n_bad_k} observations ({pct_bad_k:.1f}%) have Pareto k > 0.7")
+            else:
+                print("✓ All Pareto k values within acceptable range")
+                
+        except Exception as e:
+            print(f"Warning: Could not compute LOO/WAIC: {e}")
+        
         # === Enhanced MLflow Logging ===
         import tempfile
         
