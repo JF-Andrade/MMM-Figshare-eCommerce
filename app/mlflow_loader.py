@@ -153,6 +153,7 @@ def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> di
 
     deliverable_names = [
         "roi",
+        "roi_hdi",
         "saturation",
         "adstock",
         "contributions",
@@ -166,9 +167,17 @@ def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> di
     for name in deliverable_names:
         try:
             data = load_deliverable(run_id, name, client)
-            deliverables[name] = data.get(name, data)
+            # Handle different JSON structures:
+            # Some are {name: [...]} and some are just [...]
+            if isinstance(data, dict) and name in data:
+                deliverables[name] = data[name]
+            elif isinstance(data, dict) and len(data) == 1:
+                # Single key dict - extract the value
+                deliverables[name] = list(data.values())[0]
+            else:
+                deliverables[name] = data
         except Exception as e:
-            print(f"Warning: Could not load {name}: {e}")
+            # Silent fail for optional deliverables
             deliverables[name] = None
 
     return deliverables
