@@ -17,10 +17,11 @@ Technical audit of the Ridge Regression baseline model. All identified issues co
 
 ### Medium Fixes
 
-| ID  | Issue                               | Fix Applied                                       | File          |
-| --- | ----------------------------------- | ------------------------------------------------- | ------------- |
-| B4  | Negative coefficients not validated | Added warning for economically implausible values | `insights.py` |
-| B5  | Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                 | `config.py`   |
+| ID  | Issue                               | Fix Applied                                                            | File                            |
+| --- | ----------------------------------- | ---------------------------------------------------------------------- | ------------------------------- |
+| B4  | Negative coefficients not validated | Added warning for economically implausible values                      | `insights.py`                   |
+| B5  | Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                                      | `config.py`                     |
+| B6  | META multicollinearity              | Aggregated META_FACEBOOK + META_INSTAGRAM + META_OTHER into META_SPEND | `config.py`, `preprocessing.py` |
 
 ### Low Priority Fixes
 
