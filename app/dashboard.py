@@ -235,7 +235,6 @@ def render_regional_tab(deliverables: dict):
     st.subheader("Regional Performance")
 
     regional = deliverables.get("regional")
-    roi_data = deliverables.get("roi")
 
     if not regional:
         st.warning("Regional data not available.")
@@ -243,19 +242,24 @@ def render_regional_tab(deliverables: dict):
 
     import pandas as pd
 
-    # Regional summary table
-    st.markdown("**Regional Summary**")
+    # Regional data is now flat: each row has region + channel info
     regional_df = pd.DataFrame(regional)
-    st.dataframe(regional_df, width="stretch")
+    
+    # Summary table
+    st.markdown("**Regional Summary**")
+    summary_cols = ["region", "channel", "roi", "contribution", "contribution_pct"]
+    display_cols = [c for c in summary_cols if c in regional_df.columns]
+    st.dataframe(regional_df[display_cols], use_container_width=True)
 
-    # Heatmap data
-    if roi_data:
-        st.markdown("---")
-        st.markdown("**ROI Heatmap (Channel x Region)**")
-        roi_df = pd.DataFrame(roi_data)
-        if "region" in roi_df.columns:
-            pivot = roi_df.pivot(index="channel", columns="region", values="roi")
-            st.dataframe(pivot.style.background_gradient(cmap="RdYlGn", vmin=0, vmax=5))
+    # Heatmap (uses the flat regional data)
+    st.markdown("---")
+    st.markdown("**ROI Heatmap (Channel x Region)**")
+    
+    if "region" in regional_df.columns and "channel" in regional_df.columns and "roi" in regional_df.columns:
+        pivot = regional_df.pivot(index="channel", columns="region", values="roi")
+        st.dataframe(pivot.style.background_gradient(cmap="RdYlGn", vmin=0, vmax=5), use_container_width=True)
+    else:
+        st.info("Heatmap requires region, channel, and roi columns.")
 
 
 def render_params_tab(deliverables: dict):
