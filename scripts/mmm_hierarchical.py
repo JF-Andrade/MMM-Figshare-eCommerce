@@ -69,6 +69,7 @@ from src.models.hierarchical_bayesian import (
     predict as predict_custom,
     evaluate as evaluate_custom,
     compute_channel_contributions,
+    compute_roi_with_hdi,
 )
 from src.insights import (
     extract_adstock_params,
@@ -83,6 +84,7 @@ from src.insights import (
     plot_optimization_results,
     plot_regional_comparison,
     plot_roi_heatmap,
+    plot_saturation_curves_hierarchical,
 )
 
 if TYPE_CHECKING:
@@ -639,6 +641,30 @@ def run_hierarchical(
         mlflow.log_dict({"adstock": adstock_params}, "deliverables/adstock.json")
         mlflow.log_dict({"saturation": saturation_params}, "deliverables/saturation.json")
 
+        # 7. ROI with Uncertainty (HDI)
+        print("\nComputing ROI with uncertainty intervals...")
+        roi_hdi_df = compute_roi_with_hdi(
+            idata,
+            m_data["X_spend_train"],
+            m_data["territory_idx_train"],
+            m_data["channel_names"],
+            hdi_prob=0.94,
+            n_samples=500,
+        )
+        mlflow.log_dict(
+            {"roi_hdi": roi_hdi_df.to_dict(orient="records")},
+            "deliverables/roi_hdi.json"
+        )
+        print(f"ROI HDI computed for {len(roi_hdi_df)} channels")
+        
+        # 8. Saturation Curves Visualization
+        print("\nGenerating saturation curves plot...")
+        sat_curves_path = output_dir / "saturation_curves.png"
+        plot_saturation_curves_hierarchical(
+            saturation_params=saturation_params,
+            output_path=sat_curves_path,
+        )
+        mlflow.log_artifact(str(sat_curves_path), "diagnostics")
 
         # Log Optimization
         # Calculate total spend from contribution dataframe
