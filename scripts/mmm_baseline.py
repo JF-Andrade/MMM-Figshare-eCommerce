@@ -179,8 +179,9 @@ def run_ridge_baseline(
     df_dev = df_weekly.iloc[:dev_end_idx].copy()
     
     # --- Bayesian Optimization for Hyperparameters ---
-    print(f"\n2. Bayesian Search ({BAYESIAN_N_CALLS} iterations)...")
-    print(f"   Strategy: Expanding Window CV (5 splits) on {len(df_dev)} weeks of data.")
+    print(f"\n2. Bayesian Optimization ({BAYESIAN_N_CALLS} iterations)...")
+    print(f"   • Strategy: Expanding Window CV (5 splits, gap=2)")
+    print(f"   • Development set: {len(df_dev)} weeks")
     
     from sklearn.model_selection import TimeSeriesSplit
 
@@ -240,8 +241,8 @@ def run_ridge_baseline(
     best_decay, best_sat, best_alpha = result.x
     best_score = -result.fun
 
-    print(f"\n   Best Params: Adstock={best_decay:.4f}, Saturation={best_sat:.4f}, Alpha={best_alpha:.1f}")
-    print(f"   CV R² (avg across 5 splits): {best_score:.4f}")
+    print(f"\n   Best: α={best_decay:.4f}, sat={best_sat:.4f}, ridge={best_alpha:.1f}")
+    print(f"   CV R²: {best_score:.3f} (conservative cross-validated estimate)")
 
     # Prepare final features with best params
     X, y, channels, y_mean, channel_max_dict, _ = prepare_baseline_features(
@@ -281,7 +282,6 @@ def run_ridge_baseline(
     
     train_inspect.to_parquet(inspect_dir / "baseline_train.parquet", index=False)
     test_inspect.to_parquet(inspect_dir / "baseline_test.parquet", index=False)
-    print(f"Saved inspection data to {inspect_dir}")
 
     # Train final model
     pipeline, training_time = train_ridge_model(X_train, y_train, alpha=best_alpha)
@@ -293,7 +293,10 @@ def run_ridge_baseline(
     metrics["best_adstock"] = best_decay
     metrics["best_saturation"] = best_sat
 
-    print(f"Train: {len(X_train)} weeks, Test: {len(X_test)} weeks")
+    print(f"\n3. Final Model (train: {len(X_train)} weeks, holdout: {len(X_test)} weeks)")
+    print(f"   • R² Train: {metrics['r2_train']:.3f}")
+    print(f"   • R² Test:  {metrics['r2_test']:.3f}")
+    print(f"   • MAPE Test: {metrics['mape_test']:.1f}%")
 
     # Use nested run if parent exists (called from pipeline)
     with mlflow.start_run(run_name="ridge_baseline", nested=parent_run_id is not None):
@@ -309,8 +312,7 @@ def run_ridge_baseline(
         })
         
         # Already trained and evaluated
-        print("\n3. Best Model Selected")
-        print(f"Best Alpha: {metrics['alpha']}")
+
 
         mlflow.log_metrics(metrics)
 
@@ -330,7 +332,6 @@ def run_ridge_baseline(
         )
 
         # Plots
-        print("\n5. Generating plots (Actual vs Predicted, Coefficients, ROI)...")
         plot_baseline_results(
             pipeline, 
             X_train, 
@@ -342,8 +343,12 @@ def run_ridge_baseline(
             dates_train=dates_train,
             dates_test=dates_test
         )
+        
+        print("\n4. Artifacts saved to models/")
         plot_path = output_dir / "ridge_baseline_results.png"
-        print(f"   Saved: {plot_path}")
+        print(f"   • {plot_path.name}")
+        print(f"   • ridge_coefficients.csv")
+        print(f"   • ridge_roi.csv")
         mlflow.log_artifact(plot_path)
 
         # Save locally
