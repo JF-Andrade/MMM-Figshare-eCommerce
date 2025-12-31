@@ -646,36 +646,20 @@ def apply_saturation_transform(
 def create_hierarchy_indices(
     df: pd.DataFrame,
     geo_col: str = "geo",
-    currency_col: str = "CURRENCY_CODE",
-) -> tuple["NDArray", "NDArray", "NDArray", list[str], list[str]]:
+) -> tuple["NDArray", list[str]]:
     """
     Create integer indices for hierarchical model.
     
     Returns:
         territory_idx: Territory index for each observation (n_obs,)
-        currency_idx: Currency index for each observation (n_obs,)
-        territory_to_currency: Mapping from territory to currency (n_territories,)
         territory_names: List of territory names
-        currency_names: List of currency names
     """
     # Territory indexing
     territory_cat = pd.Categorical(df[geo_col])
     territory_idx = territory_cat.codes
     territory_names = territory_cat.categories.tolist()
     
-    # Currency indexing
-    currency_cat = pd.Categorical(df[currency_col])
-    currency_idx = currency_cat.codes
-    currency_names = currency_cat.categories.tolist()
-    
-    # Mapping: territory -> currency
-    territory_to_currency = np.zeros(len(territory_names), dtype=int)
-    for t_idx, territory in enumerate(territory_names):
-        territory_df = df[df[geo_col] == territory]
-        currency = territory_df[currency_col].iloc[0]
-        territory_to_currency[t_idx] = currency_names.index(currency)
-    
-    return territory_idx, currency_idx, territory_to_currency, territory_names, currency_names
+    return territory_idx, territory_names
 
 
 def add_fourier_seasonality(

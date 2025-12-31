@@ -96,9 +96,10 @@ CPC_COLS = [
 # Endogenous features explicitly excluded from modeling
 ENDOGENOUS_COLS = CTR_COLS + CPC_COLS
 
-# Final Feature Set for Modeling (excluding endogenous variables)
+# Final Feature Set for Modeling (excluding endogenous variables and SHARE_COLS)
+# Note: SHARE_COLS removed - redundant with SPEND_COLS and causes multicollinearity
 ALL_FEATURES = [
-    col for col in (SPEND_COLS + SHARE_COLS + TRAFFIC_COLS + CONTROL_COLS + SEASON_COLS)
+    col for col in (SPEND_COLS + TRAFFIC_COLS + CONTROL_COLS + SEASON_COLS)
     if col not in ENDOGENOUS_COLS
 ]
 
@@ -129,8 +130,8 @@ HOLDOUT_WEEKS = 8
 
 # --- MCMC Settings ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 3000
-MCMC_TUNE = 1500
+MCMC_DRAWS = 1000
+MCMC_TUNE = 500
 MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 12
 MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)
@@ -139,17 +140,18 @@ MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)
 L_MAX =  6                     # Maximum lag weeks
 PRIOR_ADSTOCK_ALPHA = 2        # Beta(alpha, beta) for decay rate
 PRIOR_ADSTOCK_BETA = 2
-PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.1  # Regional variation in adstock
+PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.2  # Regional variation in adstock (M1: increased from 0.1)
 
 # --- Priors: Saturation (Hill Function) ---
-PRIOR_SATURATION_L_SIGMA = 1.0       # HalfNormal sigma for L (half-saturation)
+PRIOR_SATURATION_L_SIGMA = 0.3       # HalfNormal sigma for L (half-saturation)
+                                      # Calibrated for X_spend_norm in [0, 1]
 PRIOR_SATURATION_K_ALPHA = 2         # Gamma(alpha, beta) for k (steepness)
 PRIOR_SATURATION_K_BETA = 1
-PRIOR_SIGMA_SATURATION_TERRITORY = 0.1 # Regional variation in L
+PRIOR_SIGMA_SATURATION_TERRITORY = 0.2 # Regional variation in L (M5: increased from 0.1)
 
 # --- Priors: Hierarchical Intercepts ---
-PRIOR_SIGMA_CURRENCY = 0.5   # Variation between currencies
-PRIOR_SIGMA_TERRITORY = 0.3  # Variation between territories within currency
+# PRIOR_SIGMA_CURRENCY removed: currency hierarchy eliminated (each territory -> one currency)
+PRIOR_SIGMA_TERRITORY = 0.5  # Variation between territories (increased to absorb currency effect)
 
 # --- Priors: Channel Effects ---
 PRIOR_BETA_CHANNEL_SIGMA = 0.5     # HalfNormal sigma for channel betas
@@ -157,7 +159,7 @@ PRIOR_SIGMA_BETA_TERRITORY = 0.05  # Regional variation in channel effects
 
 # --- Priors: Feature Effects (Regularized Horseshoe - Piironen & Vehtari, 2017) --- Lido em https://arxiv.org/abs/1707.01694
 # Higher m0 = weaker regularization, lower m0 = stronger regularization
-PRIOR_HORSESHOE_M0 = 20  # Expected ~20 relevant features out of ~40
+PRIOR_HORSESHOE_M0 = 5  # Expected ~5 relevant features out of ~10
 PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
 # Note: tau0 is computed dynamically based on m0, D, and n in the model
 
@@ -165,10 +167,11 @@ PRIOR_HORSESHOE_LAMBDA_BETA = 1  # HalfCauchy beta for local shrinkage
 PRIOR_GAMMA_SEASON_SIGMA = 0.3   # Normal sigma for seasonality
 
 # --- Priors: Likelihood (Student-T) ---
-PRIOR_SIGMA_OBS = 0.5  # HalfNormal sigma for observation noise
+PRIOR_SIGMA_OBS = 1.0  # HalfNormal sigma for observation noise
+                       # Calibrated for y_log with std ≈ 0.5-1.5
 USE_STUDENT_T = True   # Use robust Student-T likelihood
 PRIOR_NU_ALPHA = 2     # Gamma(alpha, beta) for degrees of freedom
-PRIOR_NU_BETA = 0.1
+PRIOR_NU_BETA = 0.5    # C1: Changed from 0.1 to 0.5 -> mean nu ≈ 4 (more robust to outliers)
 
 # =============================================================================
 # 7. BASELINE MODEL CONFIGURATION (Ridge Regression with Bayesian Optimization)

@@ -6,6 +6,8 @@
 
 Bayesian Marketing Mix Model to quantify the ROI of digital advertising channels and optimize budget allocation across Google, Meta, and TikTok platforms.
 
+> [!NOTE] > **2025-12-31:** Technical audit completed. See [CHANGELOG.md](CHANGELOG.md) for all corrections.
+
 ---
 
 ## Table of Contents
@@ -166,20 +168,17 @@ All priors are externalized to `src/config.py` for easy tuning.
 | Component      | Parameter     | Distribution     | Config                             | Description                                                                                                                     |
 | -------------- | ------------- | ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | **Adstock**    | α (alpha)     | Beta(2, 2)       | `PRIOR_ADSTOCK_ALPHA/BETA`         | Decay rate controlling how quickly ad effects fade. Values near 0 = rapid decay, near 1 = slow decay. Beta(2,2) centers at 0.5. |
-| **Adstock**    | σ_α           | HalfNormal(0.1)  | `PRIOR_SIGMA_ADSTOCK_TERRITORY`    | Variation in decay rates across territories.                                                                                    |
-| **Saturation** | L             | HalfNormal(1.0)  | `PRIOR_SATURATION_L_SIGMA`         | Half-saturation point: spend level where 50% of max effect is reached. Higher L = more spend needed.                            |
+| **Adstock**    | σ_α           | HalfNormal(0.2)  | `PRIOR_SIGMA_ADSTOCK_TERRITORY`    | Variation in decay rates across territories.                                                                                    |
+| **Saturation** | L             | HalfNormal(0.3)  | `PRIOR_SATURATION_L_SIGMA`         | Half-saturation point (calibrated for normalized spend in [0,1]).                                                               |
 | **Saturation** | k             | Gamma(2, 1)      | `PRIOR_SATURATION_K_ALPHA/BETA`    | Hill curve steepness. k=1 is linear, k>2 creates sharp S-curve.                                                                 |
-| **Saturation** | σ_L           | HalfNormal(0.1)  | `PRIOR_SIGMA_SATURATION_TERRITORY` | Regional variation in saturation points.                                                                                        |
-| **Hierarchy**  | σ_currency    | HalfNormal(0.5)  | `PRIOR_SIGMA_CURRENCY`             | Baseline revenue variation between currencies (GBP, USD, EUR).                                                                  |
-| **Hierarchy**  | σ_territory   | HalfNormal(0.3)  | `PRIOR_SIGMA_TERRITORY`            | Territory variation nested within currency.                                                                                     |
+| **Saturation** | σ_L           | HalfNormal(0.2)  | `PRIOR_SIGMA_SATURATION_TERRITORY` | Regional variation in saturation points.                                                                                        |
+| **Hierarchy**  | σ_territory   | HalfNormal(0.5)  | `PRIOR_SIGMA_TERRITORY`            | Baseline revenue variation between territories.                                                                                 |
 | **Channels**   | β_channel     | HalfNormal(0.5)  | `PRIOR_BETA_CHANNEL_SIGMA`         | Global channel effect magnitude. Positive-only ensures spend increases revenue.                                                 |
 | **Channels**   | σ_β_territory | HalfNormal(0.05) | `PRIOR_SIGMA_BETA_TERRITORY`       | Regional variation in channel effectiveness.                                                                                    |
-| **Horseshoe**  | τ             | HalfCauchy(1)    | `PRIOR_HORSESHOE_TAU_BETA`         | Global shrinkage for 43 auxiliary features.                                                                                     |
-| **Horseshoe**  | λ             | HalfCauchy(1)    | `PRIOR_HORSESHOE_LAMBDA_BETA`      | Local shrinkage per feature. Enables sparse feature selection.                                                                  |
-| **Likelihood** | σ_obs         | HalfNormal(0.5)  | `PRIOR_SIGMA_OBS`                  | Observation noise scale (log-revenue).                                                                                          |
-| **Likelihood** | ν             | Gamma(2, 0.1)    | `PRIOR_NU_ALPHA/BETA`              | Student-T degrees of freedom. Low ν (~3-10) = heavy tails for outlier robustness.                                               |
-
-> [!TIP] > **Student-T Likelihood** (`USE_STUDENT_T=True`): Automatically down-weights extreme observations like Black Friday spikes.
+| **Horseshoe**  | τ             | HalfStudentT(3)  | Computed: `τ0 = m0/(D-m0)/√n`      | Global shrinkage (Piironen & Vehtari, 2017).                                                                                    |
+| **Horseshoe**  | λ             | HalfStudentT(3)  | `PRIOR_HORSESHOE_LAMBDA_BETA`      | Local shrinkage per feature. Enables sparse feature selection.                                                                  |
+| **Likelihood** | σ_obs         | HalfNormal(1.0)  | `PRIOR_SIGMA_OBS`                  | Observation noise scale (calibrated for y_log std ≈ 0.5-1.5).                                                                   |
+| **Likelihood** | ν             | Gamma(2, 0.5)    | `PRIOR_NU_ALPHA/BETA`              | Student-T degrees of freedom. Mean ν ≈ 4 for robust outlier handling.                                                           |
 
 ### Control Variables
 
@@ -198,16 +197,16 @@ All priors are externalized to `src/config.py` for easy tuning.
 | ------------- | --------------------------------- |
 | Sampler       | PyMC (CPU with **Numba Backend**) |
 | Chains        | 4                                 |
-| Draws         | 2,000                             |
-| Tune          | 1,500                             |
-| Target Accept | 0.99                              |
-| Max Treedepth | 15                                |
+| Draws         | 1,000                             |
+| Tune          | 500                               |
+| Target Accept | 0.85                              |
+| Max Treedepth | 12                                |
 
 ### Validation Strategy
 
-- **Temporal Holdout**: Last 12 weeks held out for validation
-- **Convergence Diagnostics**: R-hat < 1.01 (optimized via high `target_accept` and `max_treedepth`), ESS > 400, Zero divergences.
-- **Metrics**: R², MAE, MAPE
+- **Temporal Holdout**: Last 8 weeks held out for validation
+- **Convergence Diagnostics**: R-hat < 1.01, ESS > 400, BFMI > 0.3, Zero divergences
+- **Metrics**: R², MAE, SMAPE (symmetric MAPE)
 - **Cross-Validation**:
   - **Ridge Baseline**: `TimeSeriesSplit` (5 folds) preventing data leakage.
   - **Hierarchical**: Expanding window CV (Module available in `src/validation.py`).
@@ -264,7 +263,8 @@ MMM-Figshare-eCommerce/
 │   ├── test_preprocessing.py  # Preprocessing tests
 │   ├── test_model.py          # Model creation tests
 │   ├── test_model_insights.py # Insights extraction tests
-│   └── test_optimization.py   # Optimization tests
+│   ├── test_optimization.py   # Optimization tests
+│   └── test_horseshoe_tau.py  # Horseshoe prior formula validation
 │
 ├── models/                     # Saved models and traces
 ├── mlruns/                     # MLflow experiment tracking

@@ -251,8 +251,8 @@ def evaluate_ridge_model(
         "mape_test": float(mean_absolute_percentage_error(y_test, y_pred_test) * 100),
     }
 
-    print(f"R2 Train: {metrics['r2_train']:.3f}")
-    print(f"R2 Test: {metrics['r2_test']:.3f}")
+    print(f"Final R² Train (full training set): {metrics['r2_train']:.3f}")
+    print(f"Final R² Test (holdout): {metrics['r2_test']:.3f}")
     print(f"MAPE Test: {metrics['mape_test']:.1f}%")
 
     return metrics

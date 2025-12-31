@@ -58,17 +58,20 @@ Source: `data/raw/conjura_mmm_data_dictionary.xlsx`
 
 The pipeline generates several derived features to improve model signal.
 
-| Feature Type            | Description                                                 |
-| ----------------------- | ----------------------------------------------------------- |
-| **Efficiency (CTR)**    | `click / impression` for each channel.                      |
-| **Cost (CPC)**          | `spend / click` for each channel.                           |
-| **Rolling (7D)**        | 7-day rolling Std (volatility) for all spend channels.      |
-| **Share of Spend**      | `% of total daily spend` allocated to each channel.         |
-| **Customer Behavior**   | ~~Disabled: data leakage risk~~                             |
-| **Traffic (Non-Paid)**  | Direct, Branded, Organic, Email, Referral, Other clicks.    |
-| **Temporal**            | Holiday indicator, linear trend, and Q4 seasonality.        |
-| **Fourier Seasonality** | 2-term Fourier series (sin/cos) to capture yearly patterns. |
-| **Adstock**             | Geometric decay applied per territory (`l_max=12`).         |
-| **Saturation**          | Logistic transformation applied to adstocked spend.         |
+| Feature Type            | Description                                                  |
+| ----------------------- | ------------------------------------------------------------ |
+| **Efficiency (CTR)**    | `click / impression` for each channel.                       |
+| **Cost (CPC)**          | `spend / click` for each channel.                            |
+| **Rolling (7D)**        | 7-day rolling Std (volatility) for all spend channels.       |
+| **Share of Spend**      | `% of total daily spend` allocated to each channel.          |
+| **Customer Behavior**   | ~~Disabled: data leakage risk~~                              |
+| **Traffic (Non-Paid)**  | Direct, Branded, Organic, Email, Referral, Other clicks.     |
+| **Temporal**            | Holiday indicator, linear trend, and Q4 seasonality.         |
+| **Fourier Seasonality** | 2-term Fourier series (sin/cos) for week and month patterns. |
+| **Cyclic Encoding**     | WEEK_SIN/COS and MONTH_SIN/COS (1st and 2nd order).          |
+| **Adstock**             | Geometric decay learned per channel/territory (`L_MAX=6`).   |
+| **Saturation**          | Hill function with learned L (half-sat) and k (steepness).   |
 
-> Total features in the Hierarchical Model: **50**
+> Total features in the Hierarchical Model: **27** (9 spend + 10 traffic/control + 8 season)
+>
+> **Last updated:** 2025-12-31 (post-audit). See [CHANGELOG.md](/CHANGELOG.md) for recent changes.

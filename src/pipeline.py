@@ -22,8 +22,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
+import mlflow
 
-from src.config import PipelineConfig, generate_run_id
+from src.config import (
+    PipelineConfig,
+    generate_run_id,
+    MLFLOW_TRACKING_URI,
+    MLFLOW_EXPERIMENT_NAME,
+)
 
 # Configure JAX to use 64-bit precision (critical for PyMC compatibility)
 try:
@@ -126,6 +132,12 @@ class MMMPipeline:
         self.config = config or PipelineConfig()
         self.state = PipelineState()
         self._start_time: float | None = None
+        self._parent_run_id: str | None = None
+    
+    @property
+    def parent_run_id(self) -> str | None:
+        """Return parent run ID for child runs to use."""
+        return self._parent_run_id
 
     def run(
         self,
@@ -157,11 +169,41 @@ class MMMPipeline:
             stages = [s for s in stages if s not in skip_stages]
 
         logger.info(f"Stages to run: {[s.name for s in stages]}")
-
-        for stage in stages:
-            self._run_stage(stage)
-
-        total_time = time.time() - self._start_time
+        
+        # Setup MLflow parent run
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+        
+        with mlflow.start_run(run_name=f"pipeline_{self.config.run_id}") as parent_run:
+            self._parent_run_id = parent_run.info.run_id
+            
+            # Log pipeline metadata
+            mlflow.set_tags({
+                "git_hash": self.config.git_hash or "unknown",
+                "pipeline_run_id": self.config.run_id,
+                "run_type": "pipeline",
+            })
+            mlflow.log_param("stages_executed", [s.name for s in stages])
+            
+            # Execute stages
+            for stage in stages:
+                self._run_stage(stage)
+            
+            # Log aggregated metrics
+            total_time = time.time() - self._start_time
+            mlflow.log_metric("total_pipeline_time_seconds", total_time)
+            
+            # Log best model comparison if both ran
+            baseline_r2 = getattr(self.state, 'baseline_metrics', {}).get('r2_test', None)
+            hierarchical_r2 = getattr(self.state, 'hierarchical_metrics', {}).get('r2_test', None)
+            
+            if baseline_r2 is not None:
+                mlflow.log_metric("baseline_r2_test", baseline_r2)
+            if hierarchical_r2 is not None:
+                mlflow.log_metric("hierarchical_r2_test", hierarchical_r2)
+            if baseline_r2 is not None and hierarchical_r2 is not None:
+                mlflow.log_metric("best_r2_test", max(baseline_r2, hierarchical_r2))
+        
         logger.info("=" * 60)
         logger.info(f"PIPELINE COMPLETE ({total_time:.1f}s)")
         logger.info(f"Completed: {[s.name for s in self.state.completed_stages]}")
@@ -244,6 +286,7 @@ class MMMPipeline:
             self.config.processed_data_path,
             self.config.models_dir,
             region=self.config.baseline_region,
+            parent_run_id=self.parent_run_id,
         )
 
         self.state.baseline_model = mmm
@@ -264,6 +307,7 @@ class MMMPipeline:
             self.config.processed_data_path,
             self.config.models_dir,
             max_regions=self.config.max_regions,
+            parent_run_id=self.parent_run_id,
         )
 
         self.state.hierarchical_model = idata  # Store trace

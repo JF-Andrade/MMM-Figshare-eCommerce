@@ -42,7 +42,6 @@ from src.config import (
     YEARLY_SEASONALITY,
     HOLDOUT_WEEKS,
     ALL_FEATURES,
-    SHARE_COLS,
     SEASON_COLS,
     DATE_COL,
     GEO_COL,
@@ -118,12 +117,10 @@ def prepare_hierarchical_data(
     # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
     df_combined = compute_temporal_features(df_combined, date_col=DATE_COL)
 
-    # 4. Normalize spend within currency
-    df_combined = normalize_spend_by_currency(df_combined, SPEND_COLS)
-
-    # NOTE: Adstock and saturation are now applied INSIDE the Bayesian model
-    # as learned parameters. We pass raw normalized spend to the model.
-    # The model will learn alpha (adstock decay) and L, k (saturation) per channel.
+    # C2 FIX: Removed normalize_spend_by_currency() here
+    # Normalization now happens in prepare_model_data() AFTER train/test split
+    # to prevent data leakage (max from test influencing train normalization)
+    # Just ensure SPEND_COLS exist for later normalization
 
     # 5. Log-transform target
     df_combined['y_log'] = np.log1p(df_combined[TARGET_COL])
@@ -140,22 +137,17 @@ def prepare_hierarchical_data(
                 "Adstock computation requires sorted data."
             )
 
-    # 7. Create hierarchy indices
-    territory_idx, currency_idx, territory_to_currency, territory_names, currency_names = create_hierarchy_indices(
-        df_combined, geo_col=GEO_COL, currency_col='CURRENCY_CODE'
-    )
+    # 7. Create hierarchy indices (simplified: Global → Territory)
+    territory_idx, territory_names = create_hierarchy_indices(df_combined, geo_col=GEO_COL)
 
     indices = {
         "territory_idx": territory_idx,
-        "currency_idx": currency_idx,
-        "territory_to_currency": territory_to_currency,
         "territory_names": territory_names,
-        "currency_names": currency_names,
     }
 
     print(f"Combined data: {len(df_combined)} rows, {len(regions)} regions")
-    print(f"Features: {len(df_combined.columns)} columns")
-    print(f"Hierarchy: {len(currency_names)} currencies, {len(territory_names)} territories")
+    print(f"DataFrame columns: {len(df_combined.columns)} (includes raw/intermediate cols)")
+    print(f"Hierarchy: {len(territory_names)} territories")
 
     return df_combined, indices
 
@@ -171,20 +163,19 @@ def prepare_model_data(
     
     If train_indices/test_indices provided, use them (for CV).
     Otherwise, fall back to HOLDOUT_WEEKS split (backward compatibility).
+    
+    C2 FIX: Spend normalization now happens here AFTER split,
+    fitting max on train only to prevent data leakage.
     """
-    from src.config import ALL_FEATURES, SPEND_COLS
-
-    # Group columns by type for the model
-    # RAW normalized spend (adstock/saturation applied inside model)
-    spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df.columns]
+    from src.config import ALL_FEATURES, SPEND_COLS, SEASON_COLS
     
     # Seasonality Cyclic terms
-    from src.config import SEASON_COLS
     season_cols = [c for c in SEASON_COLS if c in df.columns]
     
-    # All other features (Efficiency, Cost, Customer, Trend, Holiday)
-    excluded = [TARGET_COL, "y_log", DATE_COL, GEO_COL, "CURRENCY_CODE"] + spend_norm_cols + season_cols
+    # All other features (Traffic, Controls - NOT spend or season)
+    excluded = [TARGET_COL, "y_log", DATE_COL, GEO_COL, "CURRENCY_CODE"] + season_cols + SPEND_COLS
     other_feature_cols = [c for c in df.columns if c in ALL_FEATURES and c not in excluded]
+
 
     # Temporal Split
     if train_indices is None or test_indices is None:
@@ -192,8 +183,33 @@ def prepare_model_data(
             df, GEO_COL, HOLDOUT_WEEKS
         )
 
-    df_train = df.loc[train_indices].copy()
-    df_test = df.loc[test_indices].copy()
+    # M4 FIX: Use iloc for robust index handling (avoid issues if index is not contiguous)
+    df_train = df.iloc[train_indices].copy()
+    df_test = df.iloc[test_indices].copy()
+    
+    # =========================================================================
+    # C2 FIX: Normalize spend AFTER split, fitting on train only
+    # =========================================================================
+    spend_max_by_currency = {}  # Store max per (currency, channel) from train
+    
+    for col in SPEND_COLS:
+        if col not in df_train.columns:
+            continue
+        # Compute max per currency from TRAIN only
+        train_max = df_train.groupby("CURRENCY_CODE")[col].transform("max")
+        df_train[f"{col}_norm"] = df_train[col] / (train_max + 1e-8)
+        
+        # Store max values for applying to test
+        currency_max = df_train.groupby("CURRENCY_CODE")[col].max().to_dict()
+        spend_max_by_currency[col] = currency_max
+        
+        # Apply SAME max to test (no data leakage)
+        test_max = df_test["CURRENCY_CODE"].map(currency_max).fillna(1e-8)
+        df_test[f"{col}_norm"] = df_test[col] / (test_max + 1e-8)
+    
+    spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df_train.columns]
+    print(f"C2 FIX: Normalized {len(spend_norm_cols)} spend columns using train-only max")
+    # =========================================================================
 
     # Scale features and seasonality (StandardScaler)
     # This helps NUTS sampler convergence
@@ -217,6 +233,11 @@ def prepare_model_data(
         X_season_test = df_test[season_cols].fillna(0).values
 
     # Prepare Dictionary for Model Fitting
+    # Log warning for NaN values before fillna
+    nan_counts = df_train[spend_norm_cols].isna().sum()
+    if nan_counts.sum() > 0:
+        print(f"WARNING: Found {nan_counts.sum()} NaN values in spend columns. Filling with 0.")
+    
     model_data = {
         "X_spend_train": np.ascontiguousarray(df_train[spend_norm_cols].fillna(0).values).astype(np.float64),
         "X_spend_test": np.ascontiguousarray(df_test[spend_norm_cols].fillna(0).values).astype(np.float64),
@@ -230,10 +251,6 @@ def prepare_model_data(
         "y_test_original": np.ascontiguousarray(df_test[TARGET_COL].fillna(0).values).astype(np.float64),
         "territory_idx_train": indices["territory_idx"][train_indices],
         "territory_idx_test": indices["territory_idx"][test_indices],
-        "currency_idx_train": indices["currency_idx"][train_indices],
-        "currency_idx_test": indices["currency_idx"][test_indices],
-        "territory_to_currency": indices["territory_to_currency"],
-        "n_currencies": len(indices["currency_names"]),
         "n_territories": len(indices["territory_names"]),
         "channel_names": [c.replace("_norm", "").replace("_SPEND", "") for c in spend_norm_cols],
         "feature_names": other_feature_cols,
@@ -241,10 +258,26 @@ def prepare_model_data(
         "df_test": df_test,
     }
 
-    print(f"Model Data Prepared:")
-    print(f" - Spend: {model_data['X_spend_train'].shape}")
-    print(f" - Features: {model_data['X_features_train'].shape}")
-    print(f" - Season: {model_data['X_season_train'].shape}")
+    print(f"\n{'='*60}")
+    print(f"MODEL FEATURE SUMMARY")
+    print(f"{'='*60}")
+    print(f"\n1. SPEND CHANNELS (X_spend) - {model_data['X_spend_train'].shape[1]} channels:")
+    print(f"   {model_data['channel_names']}")
+    print(f"\n2. OTHER FEATURES (X_features) - {len(other_feature_cols)} cols:")
+    print(f"   {other_feature_cols}")
+    print(f"\n3. SEASONALITY (X_season) - {model_data['X_season_train'].shape[1]} cols:")
+    print(f"   {season_cols}")
+    print(f"\n{'='*60}")
+    total_features = model_data['X_spend_train'].shape[1] + len(other_feature_cols) + model_data['X_season_train'].shape[1]
+    print(f"TOTAL FEATURES: {total_features}")
+    print(f"{'='*60}")
+    
+    # Data scale debug
+    print(f"\n=== DATA SCALE DEBUG ===")
+    print(f"y_log: mean={model_data['y_train'].mean():.3f}, std={model_data['y_train'].std():.3f}")
+    print(f"X_spend: max={model_data['X_spend_train'].max():.3f}")
+    print(f"X_features: std (avg)={model_data['X_features_train'].std(axis=0).mean():.3f}")
+    print(f"========================\n")
     
     # Save datasets for inspection
     inspect_dir = PROJECT_ROOT / "data" / "inspection"
@@ -353,6 +386,7 @@ def run_hierarchical(
     data_path: Path,
     output_dir: Path,
     max_regions: int | None = None,
+    parent_run_id: str | None = None,
 ) -> tuple[pm.Model, az.InferenceData, dict]:
     """Run complete hierarchical MMM pipeline with MLflow tracking."""
     import pymc as pm  # Local import for robustness
@@ -383,13 +417,16 @@ def run_hierarchical(
     df_combined, indices = prepare_hierarchical_data(df, regions)
     m_data = prepare_model_data(df_combined, indices)
 
-    # Start MLflow run
-    with mlflow.start_run(run_name=f"hierarchical_custom_{len(regions)}regions"):
+    # Start MLflow run (nested if called from pipeline)
+    with mlflow.start_run(
+        run_name=f"hierarchical_{len(regions)}regions",
+        nested=parent_run_id is not None
+    ):
         # Log parameters
         mlflow.log_params({
             "model_type": "nested_hierarchical_custom",
             "n_regions": len(regions),
-            "n_currencies": m_data["n_currencies"],
+            "n_territories": m_data["n_territories"],
             "n_channels": len(m_data["channel_names"]),
             "n_features": len(m_data["feature_names"]),
             "holdout_weeks": HOLDOUT_WEEKS,
@@ -410,9 +447,6 @@ def run_hierarchical(
             X_season=m_data["X_season_train"],
             y=m_data["y_train"],
             territory_idx=m_data["territory_idx_train"],
-            currency_idx=m_data["currency_idx_train"],
-            territory_to_currency=m_data["territory_to_currency"],
-            n_currencies=m_data["n_currencies"],
             n_territories=m_data["n_territories"],
             l_max=L_MAX,
             channel_names=m_data["channel_names"],
@@ -488,7 +522,6 @@ def run_hierarchical(
                 "X_features": m_data["X_features_train"],
                 "X_season": m_data["X_season_train"],
                 "territory_idx": m_data["territory_idx_train"],
-                "currency_idx": m_data["currency_idx_train"],
                 "y_obs_data": m_data["y_train"],
             })
             y_pred_train_log = predict_custom(model, idata)
@@ -502,8 +535,7 @@ def run_hierarchical(
                 "X_features": m_data["X_features_test"],
                 "X_season": m_data["X_season_test"],
                 "territory_idx": m_data["territory_idx_test"],
-                "currency_idx": m_data["currency_idx_test"],
-                "y_obs_data": np.full_like(m_data["y_test"], np.nan),  # NaN for holdout
+                "y_obs_data": np.zeros_like(m_data["y_test"]),  # C3 FIX: zeros instead of NaN
             })
             y_pred_log = predict_custom(model, idata)
 

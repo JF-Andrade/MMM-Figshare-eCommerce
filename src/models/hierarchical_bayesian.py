@@ -101,7 +101,6 @@ def geometric_adstock_pytensor(
     x: pt.TensorVariable,
     alpha: pt.TensorVariable,
     territory_idx: pt.TensorVariable,
-    l_max: int,
 ) -> pt.TensorVariable:
     """
     Apply geometric adstock transformation using PyTensor scan, respecting territory boundaries.
@@ -116,7 +115,6 @@ def geometric_adstock_pytensor(
         x: Spend tensor (n_obs, n_channels)
         alpha: Decay rate tensor (n_obs, n_channels) - already projected to observations
         territory_idx: Territory index for each observation (n_obs,)
-        l_max: Maximum lag (unused in geometric, kept for API consistency)
     
     Returns:
         Adstocked tensor (n_obs, n_channels)
@@ -202,9 +200,6 @@ def build_hierarchical_mmm(
     X_season: "NDArray",
     y: "NDArray",
     territory_idx: "NDArray",
-    currency_idx: "NDArray",
-    territory_to_currency: "NDArray",
-    n_currencies: int,
     n_territories: int,
     l_max: int | None = None,
     channel_names: list[str] | None = None,
@@ -225,7 +220,6 @@ def build_hierarchical_mmm(
         PRIOR_SATURATION_K_ALPHA,
         PRIOR_SATURATION_K_BETA,
         PRIOR_SIGMA_SATURATION_TERRITORY,
-        PRIOR_SIGMA_CURRENCY,
         PRIOR_SIGMA_TERRITORY,
         PRIOR_BETA_CHANNEL_SIGMA,
         PRIOR_SIGMA_BETA_TERRITORY,
@@ -249,11 +243,8 @@ def build_hierarchical_mmm(
     
     # Validate inputs
     assert len(territory_idx) == n_obs, "territory_idx length mismatch"
-    assert len(currency_idx) == n_obs, "currency_idx length mismatch"
-    assert len(territory_to_currency) == n_territories, "territory_to_currency mismatch"
     
     coords = {
-        "currency": list(range(n_currencies)),
         "territory": list(range(n_territories)),
         "channel": channel_names or [f"channel_{i}" for i in range(n_channels)],
         "feature": feature_names or [f"feature_{i}" for i in range(n_features)],
@@ -270,7 +261,6 @@ def build_hierarchical_mmm(
         X_features_data = pm.Data("X_features", X_features)
         X_season_data = pm.Data("X_season", X_season)
         territory_idx_data = pm.Data("territory_idx", territory_idx)
-        currency_idx_data = pm.Data("currency_idx", currency_idx)
         y_obs_data = pm.Data("y_obs_data", y)
         
         # ============================================
@@ -311,27 +301,24 @@ def build_hierarchical_mmm(
             x=X_spend_data,
             alpha=alpha_obs,
             territory_idx=territory_idx_data,
-            l_max=l_max
         )
         
         # ============================================
         # BAYESIAN SATURATION (Learned L, k)
         # ============================================
         
-        # Non-centered parameterization for L (half-saturation)
-        L_channel_raw = pm.Normal("L_channel_raw", mu=0, sigma=1, dims="channel")
-        L_channel = pm.Deterministic(
+        # M2: Use proper HalfNormal instead of folded Normal
+        L_channel = pm.HalfNormal(
             "L_channel",
-            pt.abs(L_channel_raw) * PRIOR_SATURATION_L_SIGMA,
+            sigma=PRIOR_SATURATION_L_SIGMA,
             dims="channel",
         )
         
-        # Non-centered parameterization for k (steepness) via log-normal
-        # log(k) ~ Normal(0.5, 0.5) => k ~ LogNormal with mean ~2, matching Gamma(2,1)
-        log_k_channel_raw = pm.Normal("log_k_channel_raw", mu=0, sigma=1, dims="channel")
-        k_channel = pm.Deterministic(
+        # Steepness parameter using config priors
+        k_channel = pm.Gamma(
             "k_channel",
-            pt.exp(log_k_channel_raw * 0.5 + 0.5),
+            alpha=PRIOR_SATURATION_K_ALPHA,
+            beta=PRIOR_SATURATION_K_BETA,
             dims="channel",
         )
         
@@ -343,9 +330,10 @@ def build_hierarchical_mmm(
             dims=("territory", "channel"),
         )
         
+        # M3: Use softplus for smooth gradients instead of abs()
         L_territory = pm.Deterministic(
             "L_territory",
-            pt.abs(L_channel + L_territory_raw * sigma_L),
+            pt.softplus(L_channel + L_territory_raw * sigma_L),
             dims=("territory", "channel"),
         )
         
@@ -360,20 +348,12 @@ def build_hierarchical_mmm(
         X_saturated = hill_saturation_pytensor(X_adstock, L_obs, k_channel)
         
         # ============================================
-        # HIERARCHICAL INTERCEPTS (3 levels)
+        # HIERARCHICAL INTERCEPTS (2 levels: Global → Territory)
+        # Currency level removed - each territory belongs to one currency
+        # so territory intercepts absorb the currency effect directly
         # ============================================
         
         alpha_global = pm.Normal("alpha_global", mu=0, sigma=1)
-        
-        sigma_currency = pm.HalfNormal("sigma_currency", sigma=PRIOR_SIGMA_CURRENCY)
-        alpha_currency_raw = pm.Normal(
-            "alpha_currency_raw", mu=0, sigma=1, dims="currency"
-        )
-        alpha_currency = pm.Deterministic(
-            "alpha_currency",
-            alpha_currency_raw * sigma_currency,
-            dims="currency",
-        )
         
         sigma_territory_int = pm.HalfNormal("sigma_territory_int", sigma=PRIOR_SIGMA_TERRITORY)
         alpha_territory_int_raw = pm.Normal(
@@ -381,7 +361,7 @@ def build_hierarchical_mmm(
         )
         alpha_territory_int = pm.Deterministic(
             "alpha_territory_int",
-            alpha_currency[territory_to_currency] + alpha_territory_int_raw * sigma_territory_int,
+            alpha_global + alpha_territory_int_raw * sigma_territory_int,
             dims="territory",
         )
         
@@ -418,15 +398,18 @@ def build_hierarchical_mmm(
         # Global shrinkage scale based on expected sparsity
         m0 = PRIOR_HORSESHOE_M0  # Expected number of relevant features
         D = n_features
-        tau0 = m0 / (D - m0 + 1e-8) * np.sqrt(2.0 / n_obs)
+        # Piironen & Vehtari (2017): τ₀ = p₀/(p-p₀) × 1/√n
+        tau0 = m0 / (D - m0 + 1e-8) / np.sqrt(n_obs)
         
-        tau = pm.HalfCauchy("tau", beta=tau0)
+        # Using HalfStudentT instead of HalfCauchy for numerical stability
+        # HalfStudentT(nu=3) has less extreme tails than HalfCauchy
+        tau = pm.HalfStudentT("tau", nu=3, sigma=max(tau0, 0.01))
         
         # Slab variance for regularization (prevents extreme shrinkage)
         c2 = pm.InverseGamma("c2", alpha=2, beta=1)
         
-        # Local shrinkage per feature
-        lambda_f = pm.HalfCauchy("lambda_f", beta=PRIOR_HORSESHOE_LAMBDA_BETA, dims="feature")
+        # Local shrinkage per feature (also using HalfStudentT for stability)
+        lambda_f = pm.HalfStudentT("lambda_f", nu=3, sigma=PRIOR_HORSESHOE_LAMBDA_BETA, dims="feature")
         
         # Regularized shrinkage (Finnish Horseshoe)
         lambda_tilde = pm.Deterministic(
@@ -461,8 +444,7 @@ def build_hierarchical_mmm(
         # ============================================
         
         mu = (
-            alpha_global
-            + alpha_territory_int[territory_idx_data]
+            alpha_territory_int[territory_idx_data]  # Includes alpha_global (see L366-368)
             + channel_effect
             + feature_effect
             + season_effect
@@ -571,22 +553,35 @@ def check_convergence(idata: az.InferenceData) -> dict:
     Check MCMC convergence diagnostics.
     
     Returns:
-        Dict with max_rhat, min_ess, divergences
+        Dict with max_rhat, min_ess, min_ess_tail, min_bfmi, divergences
     """
     rhat = az.rhat(idata)
     ess = az.ess(idata)
+    ess_tail = az.ess(idata, method="tail")
     
     # Flatten all values
     rhat_vals = []
     ess_vals = []
+    ess_tail_vals = []
     for var in rhat.data_vars:
         rhat_vals.extend(rhat[var].values.flatten())
     for var in ess.data_vars:
         ess_vals.extend(ess[var].values.flatten())
+    for var in ess_tail.data_vars:
+        ess_tail_vals.extend(ess_tail[var].values.flatten())
+    
+    # BFMI (Bayesian Fraction of Missing Information)
+    try:
+        bfmi_vals = az.bfmi(idata)
+        min_bfmi = float(np.min(bfmi_vals))
+    except Exception:
+        min_bfmi = 1.0
     
     return {
         "max_rhat": float(np.nanmax(rhat_vals)),
         "min_ess": float(np.nanmin(ess_vals)),
+        "min_ess_tail": float(np.nanmin(ess_tail_vals)),
+        "min_bfmi": min_bfmi,
         "divergences": int(idata.sample_stats["diverging"].sum()),
     }
 
@@ -645,8 +640,9 @@ def evaluate(
     
     mae = np.mean(np.abs(y_true_original - y_pred))
     
-    # MAPE with small epsilon to avoid division by zero
-    mape = np.mean(np.abs((y_true_original - y_pred) / (y_true_original + 1e-8))) * 100
+    # SMAPE (Symmetric MAPE) for robustness to small y values
+    denominator = (np.abs(y_true_original) + np.abs(y_pred)) / 2 + 1e-8
+    mape = np.mean(np.abs(y_true_original - y_pred) / denominator) * 100
     
     return {
         "r2": float(r2),

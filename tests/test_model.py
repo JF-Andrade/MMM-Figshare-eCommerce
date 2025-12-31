@@ -14,15 +14,12 @@ def mock_model_data():
     n_features = 2
     n_season = 4
     n_territories = 4
-    n_currencies = 2
 
     X_spend = np.random.uniform(0, 1000, (n_obs, n_channels))
     X_features = np.random.normal(0, 1, (n_obs, n_features))
     X_season = np.random.normal(0, 1, (n_obs, n_season))
     y = np.random.normal(10, 2, n_obs)
     territory_idx = np.random.randint(0, n_territories, n_obs)
-    currency_idx = np.random.randint(0, n_currencies, n_obs)
-    territory_to_currency = np.array([0, 0, 1, 1])  # 2 territories per currency
 
     return {
         "X_spend": X_spend,
@@ -30,9 +27,6 @@ def mock_model_data():
         "X_season": X_season,
         "y": y,
         "territory_idx": territory_idx,
-        "currency_idx": currency_idx,
-        "territory_to_currency": territory_to_currency,
-        "n_currencies": n_currencies,
         "n_territories": n_territories,
         "channel_names": ["Google", "Meta", "TikTok"],
         "feature_names": ["trend", "holiday"],
@@ -48,7 +42,6 @@ def test_build_hierarchical_mmm_returns_model(mock_model_data):
     # Check coordinates
     assert "channel" in model.coords
     assert "territory" in model.coords
-    assert "currency" in model.coords
     assert len(model.coords["channel"]) == 3
     assert len(model.coords["territory"]) == 4
 

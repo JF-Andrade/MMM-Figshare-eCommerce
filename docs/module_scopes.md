@@ -2,17 +2,18 @@
 
 ## src/ Modules
 
-| Module             | Scope / Purpose                                           |
-| ------------------ | --------------------------------------------------------- |
-| `config.py`        | Constants, hyperparameters, PipelineConfig dataclass      |
-| `data_loader.py`   | Load raw data, currency filtering, data validation        |
-| `preprocessing.py` | Data transforms, feature engineering, adstock, saturation |
-| `validation.py`    | Train/test splits respecting time series                  |
-| `evaluation.py`    | Metrics calculation, convergence diagnostics, ROI         |
-| `insights.py`      | Parameter extraction, visualizations, budget optimization |
-| `schemas.py`       | Pydantic models for deliverables                          |
-| `comparison.py`    | Compare baseline vs hierarchical model                    |
-| `pipeline.py`      | Orchestration, retry logic, state management              |
+| Module                            | Scope / Purpose                                           |
+| --------------------------------- | --------------------------------------------------------- |
+| `config.py`                       | Constants, hyperparameters, PipelineConfig dataclass      |
+| `data_loader.py`                  | Load raw data, currency filtering, data validation        |
+| `preprocessing.py`                | Data transforms, feature engineering, adstock, saturation |
+| `validation.py`                   | Train/test splits respecting time series                  |
+| `evaluation.py`                   | Metrics calculation, convergence diagnostics, ROI         |
+| `insights.py`                     | Parameter extraction, visualizations, budget optimization |
+| `schemas.py`                      | Pydantic models for deliverables                          |
+| `comparison.py`                   | Compare baseline vs hierarchical model                    |
+| `pipeline.py`                     | Orchestration, retry logic, state management              |
+| `models/hierarchical_bayesian.py` | Custom PyMC model with learned adstock/saturation         |
 
 ## scripts/
 

@@ -85,6 +85,7 @@ def run_ridge_baseline(
     data_path: Path,
     output_dir: Path,
     region: str | None = None,
+    parent_run_id: str | None = None,
 ) -> tuple[Pipeline, pd.DataFrame, dict]:
     """Run Ridge Regression baseline model."""
     output_dir.mkdir(exist_ok=True, parents=True)
@@ -173,7 +174,7 @@ def run_ridge_baseline(
     best_score = -result.fun
 
     print(f"\n   Best Params: Adstock={best_decay:.4f}, Saturation={best_sat:.4f}, Alpha={best_alpha:.1f}")
-    print(f"   Best Test R²: {best_score:.4f}")
+    print(f"   CV R² (avg across 5 splits): {best_score:.4f}")
 
     # Prepare final features with best params
     X, y, channels, y_scaler, channel_max_dict = prepare_baseline_features(
@@ -227,7 +228,8 @@ def run_ridge_baseline(
 
     print(f"Train: {len(X_train)} weeks, Test: {len(X_test)} weeks")
 
-    with mlflow.start_run(run_name="ridge_baseline"):
+    # Use nested run if parent exists (called from pipeline)
+    with mlflow.start_run(run_name="ridge_baseline", nested=parent_run_id is not None):
         # Log parameters
         mlflow.log_params({
             "model_type": "ridge_baseline",
@@ -261,7 +263,7 @@ def run_ridge_baseline(
         )
 
         # Plots
-        print("\n5. Generating plots...")
+        print("\n5. Generating plots (Actual vs Predicted, Coefficients, ROI)...")
         plot_baseline_results(
             pipeline, 
             X_train, 
@@ -273,7 +275,9 @@ def run_ridge_baseline(
             dates_train=dates_train,
             dates_test=dates_test
         )
-        mlflow.log_artifact(output_dir / "ridge_baseline_results.png")
+        plot_path = output_dir / "ridge_baseline_results.png"
+        print(f"   Saved: {plot_path}")
+        mlflow.log_artifact(plot_path)
 
         # Save locally
         coef_df.to_csv(output_dir / "ridge_coefficients.csv", index=False)
