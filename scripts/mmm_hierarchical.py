@@ -669,6 +669,7 @@ def run_hierarchical(
         # Log Optimization
         # Calculate total spend from contribution dataframe
         total_budget_current = contrib_df["total_spend"].sum()
+        n_obs_train = len(m_data["X_spend_train"])
         
         # Optimize budget (reallocate within +/- 30% bounds)
         from src.insights import optimize_hierarchical_budget
@@ -676,6 +677,7 @@ def run_hierarchical(
             contrib_df=contrib_df,
             saturation_params=saturation_params,
             total_budget=total_budget_current,
+            n_obs=n_obs_train,
             budget_bounds_pct=(0.70, 1.30)
         )
         

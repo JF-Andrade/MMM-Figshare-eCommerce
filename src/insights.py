@@ -801,6 +801,7 @@ def optimize_hierarchical_budget(
     contrib_df: pd.DataFrame,
     saturation_params: list[dict],
     total_budget: float,
+    n_obs: int,
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
 ) -> list[dict]:
     """
@@ -810,13 +811,17 @@ def optimize_hierarchical_budget(
     1. Current Spend & Contribution -> Estimate Scale Factor (Beta equivalent)
     2. Hill Saturation params (L, k) -> Shape of curve
     
-    Model: Contribution = Scale * (spend^k / (L^k + spend^k))
-    => Scale = Contribution / (spend^k / (L^k + spend^k))
+    CRITICAL: Uses average spend per observation to match the scale at which
+    L (half-saturation) was learned. L is calibrated for spend_norm ~0.04/obs,
+    not for sum(spend) ~10 over all observations.
+    
+    Model: Contribution = Scale * n_obs * hill_sat(avg_spend, L, k)
     
     Args:
         contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
         saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
-        total_budget: Total money to allocate.
+        total_budget: Total money to allocate (sum across all obs).
+        n_obs: Number of observations (weeks) - for scale normalization.
         budget_bounds_pct: Min/Max multiplier for individual channel spend.
         
     Returns:
@@ -837,61 +842,69 @@ def optimize_hierarchical_budget(
     
     for _, row in contrib_df.iterrows():
         ch = row['channel']
-        spend = row['total_spend']
+        total_spend = row['total_spend']
         contribution = row['contribution']
         params = param_map.get(ch, {})
         
         L = params.get('L_mean', 0.3)  # Default if missing
         k = params.get('k_mean', 2.0)  # Default if missing
         
-        if spend <= 0 or contribution <= 0:
+        # FIX: Use average spend per observation to match model scale
+        avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
+        
+        if total_spend <= 0 or contribution <= 0:
             model_data.append({
                 'channel': ch,
                 'scale': 0,
                 'L': L,
                 'k': k,
-                'current_spend': spend
+                'current_spend': total_spend,
+                'avg_spend': avg_spend
             })
             continue
         
-        # Estimate Scale Factor using Hill saturation
-        # Contrib = Scale * hill_sat(spend, L, k)
-        # Scale = Contrib / hill_sat(spend, L, k)
-        sat_current = hill_saturation(spend, L, k)
-        scale = contribution / (sat_current + 1e-9)
+        # Estimate Scale Factor using Hill saturation at average spend level
+        # Contrib = Scale * n_obs * hill_sat(avg_spend, L, k)
+        # Scale = Contrib / (n_obs * hill_sat(avg_spend, L, k))
+        sat_current = hill_saturation(avg_spend, L, k)
+        scale = contribution / (n_obs * sat_current + 1e-9)
         
         model_data.append({
             'channel': ch,
             'scale': scale,
             'L': L,
             'k': k,
-            'current_spend': spend
+            'current_spend': total_spend,
+            'avg_spend': avg_spend
         })
     
     # 2. Objective Function using Hill saturation
-    def objective(spends):
+    # NOTE: Optimization is done in avg_spend scale, then converted back
+    def objective(avg_spends):
         total_contrib = 0
-        for i, x in enumerate(spends):
+        for i, avg_x in enumerate(avg_spends):
             m = model_data[i]
             if m['scale'] > 0:
-                sat = hill_saturation(x, m['L'], m['k'])
-                total_contrib += m['scale'] * sat
+                sat = hill_saturation(avg_x, m['L'], m['k'])
+                # Contribution = scale * n_obs * sat(avg_spend)
+                total_contrib += m['scale'] * n_obs * sat
         return -total_contrib  # Minimize negative = maximize
     
-    # 3. Constraints & Bounds
-    x0 = [m['current_spend'] for m in model_data]
+    # 3. Constraints & Bounds (in avg_spend scale)
+    x0 = [m['avg_spend'] for m in model_data]
+    avg_budget = total_budget / n_obs
     
-    # Sum constraint: total spend = budget
+    # Sum constraint: avg spend = avg budget
     A_eq = np.ones((1, len(x0)))
-    linear_constraint = LinearConstraint(A_eq, [total_budget], [total_budget])
+    linear_constraint = LinearConstraint(A_eq, [avg_budget], [avg_budget])
     
-    # Channel bounds
+    # Channel bounds (in avg_spend scale)
     bounds_list = []
     for m in model_data:
-        current = m['current_spend']
-        if current > 0:
-            lb = current * budget_bounds_pct[0]
-            ub = current * budget_bounds_pct[1]
+        current_avg = m['avg_spend']
+        if current_avg > 0:
+            lb = current_avg * budget_bounds_pct[0]
+            ub = current_avg * budget_bounds_pct[1]
         else:
             lb, ub = 0, 0
         bounds_list.append((lb, ub))
@@ -906,30 +919,34 @@ def optimize_hierarchical_budget(
         options={'disp': False, 'ftol': 1e-6}
     )
     
-    # 5. Format Results
+    # 5. Format Results (convert back to total_spend scale for output)
     optimized_allocation = []
     current_total_contrib = 0
     optimal_total_contrib = 0
     
     for i, m in enumerate(model_data):
-        opt_spend = result.x[i] if result.success else m['current_spend']
-        current = m['current_spend']
+        opt_avg = result.x[i] if result.success else m['avg_spend']
+        current_avg = m['avg_spend']
+        
+        # Convert to total spend for output
+        opt_total = opt_avg * n_obs
+        current_total = m['current_spend']
         
         if m['scale'] > 0:
-            curr_c = m['scale'] * hill_saturation(current, m['L'], m['k'])
-            opt_c = m['scale'] * hill_saturation(opt_spend, m['L'], m['k'])
+            curr_c = m['scale'] * n_obs * hill_saturation(current_avg, m['L'], m['k'])
+            opt_c = m['scale'] * n_obs * hill_saturation(opt_avg, m['L'], m['k'])
         else:
             curr_c, opt_c = 0, 0
         
         current_total_contrib += curr_c
         optimal_total_contrib += opt_c
         
-        change_pct = ((opt_spend - current) / current * 100) if current > 0 else 0.0
+        change_pct = ((opt_total - current_total) / current_total * 100) if current_total > 0 else 0.0
         
         optimized_allocation.append({
             "channel": m['channel'],
-            "current_spend": float(current),
-            "optimal_spend": float(opt_spend),
+            "current_spend": float(current_total),
+            "optimal_spend": float(opt_total),
             "change_pct": float(change_pct)
         })
     
