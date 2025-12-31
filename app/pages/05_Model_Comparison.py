@@ -12,6 +12,7 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.shared import page_header, init_page_config
 from app.mlflow_loader import get_mlflow_client, get_all_runs, get_run_metrics
 from src.comparison import (
     compare_models,
@@ -20,7 +21,7 @@ from src.comparison import (
     generate_comparison_insight,
 )
 
-st.set_page_config(page_title="Model Comparison", layout="wide")
+init_page_config("Model Comparison")
 
 
 def load_baseline_runs():
@@ -44,9 +45,7 @@ def load_hierarchical_runs():
 
 
 def main():
-    st.title("Model Comparison")
-    st.markdown("Compare Ridge Regression baseline vs Bayesian Hierarchical model")
-    st.markdown("---")
+    page_header("Model Comparison", "Compare Ridge Baseline vs Bayesian Hierarchical model")
 
     # Load runs
     baseline_runs = load_baseline_runs()

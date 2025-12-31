@@ -10,39 +10,17 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.shared import shared_sidebar, page_header, init_page_config
 from app.components import adstock_decay_chart, saturation_curves_chart
-from app.mlflow_loader import (
-    get_mlflow_client,
-    get_all_runs,
-    get_run_metrics,
-    get_run_params,
-    load_all_deliverables,
-)
+from app.mlflow_loader import get_run_metrics, get_run_params
 
-st.set_page_config(page_title="Model Details", layout="wide")
-
-
-def get_deliverables():
-    """Get deliverables from session state or load them."""
-    if "deliverables" not in st.session_state or st.session_state.deliverables is None:
-        try:
-            client = get_mlflow_client()
-            runs = get_all_runs(client, model_type="hierarchical")
-            if runs:
-                run_id = runs[0]["run_id"]
-                st.session_state.deliverables = load_all_deliverables(run_id, client)
-                st.session_state.run_id = run_id
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
-            return None
-    return st.session_state.get("deliverables")
+init_page_config("Model Details")
 
 
 def main():
-    st.title("Model Technical Details")
-    st.markdown("---")
+    deliverables = shared_sidebar()
+    page_header("Model Details", "Technical parameters and learned coefficients")
 
-    deliverables = get_deliverables()
     run_id = st.session_state.get("run_id")
 
     if not deliverables:
