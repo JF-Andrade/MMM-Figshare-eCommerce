@@ -606,10 +606,12 @@ def run_hierarchical(
                 else:
                     reg_contrib_df["contribution_pct"] = 0.0
                 
-                regional_data_list.append({
-                    "region": region_name,
-                    "channels": reg_contrib_df.to_dict(orient="records")
-                })
+                # FIX: Flatten structure (avoid nested 'channels' that causes [object Object])
+                for ch_row in reg_contrib_df.to_dict(orient="records"):
+                    regional_data_list.append({
+                        "region": region_name,
+                        **ch_row
+                    })
             except Exception as e:
                 print(f"Warning: Failed to compute metrics for region {region_name}: {e}")
 
