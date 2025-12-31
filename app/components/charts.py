@@ -44,7 +44,7 @@ def roi_bar_chart(roi_data: list[dict], title: str = "ROI by Channel") -> None:
         showlegend=False,
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def contribution_pie_chart(contributions: list[dict], title: str = "Channel Contribution") -> None:
@@ -70,7 +70,7 @@ def contribution_pie_chart(contributions: list[dict], title: str = "Channel Cont
 
     fig.update_layout(height=400)
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def optimization_comparison_chart(optimization: list[dict]) -> None:
@@ -106,7 +106,7 @@ def optimization_comparison_chart(optimization: list[dict]) -> None:
         yaxis_title="Spend",
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def reallocation_chart(optimization: list[dict]) -> None:
@@ -139,7 +139,7 @@ def reallocation_chart(optimization: list[dict]) -> None:
         showlegend=False,
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def roi_heatmap(roi_data: list[dict]) -> None:
@@ -169,25 +169,28 @@ def roi_heatmap(roi_data: list[dict]) -> None:
 
     fig.update_layout(height=500)
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def saturation_curves_chart(saturation: list[dict]) -> None:
     """
-    Render saturation curves for each channel.
+    Render saturation curves for each channel using Hill function.
 
     Args:
-        saturation: List of saturation parameter records.
+        saturation: List of saturation parameter records with 'L_mean' and 'k_mean'.
     """
     import numpy as np
 
     fig = go.Figure()
 
-    x_range = np.linspace(0, 1000, 100)
+    x_range = np.linspace(0.01, 1, 100)  # Normalized spend [0, 1]
 
     for ch in saturation:
-        lam = ch["lam_mean"]
-        y = 1 - np.exp(-lam * x_range / 1000)
+        # Hill saturation: x^k / (L^k + x^k)
+        L = ch.get("L_mean", 0.3)
+        k = ch.get("k_mean", 2.0)
+        
+        y = (x_range ** k) / (L ** k + x_range ** k + 1e-8)
 
         fig.add_trace(go.Scatter(
             x=x_range,
@@ -197,13 +200,13 @@ def saturation_curves_chart(saturation: list[dict]) -> None:
         ))
 
     fig.update_layout(
-        title="Channel Saturation Curves",
-        xaxis_title="Spend (normalized)",
-        yaxis_title="Effect (0-1)",
+        title="Channel Saturation Curves (Hill Function)",
+        xaxis_title="Spend (normalized 0-1)",
+        yaxis_title="Saturation Effect (0-1)",
         height=400,
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def adstock_decay_chart(adstock: list[dict]) -> None:
@@ -239,4 +242,4 @@ def adstock_decay_chart(adstock: list[dict]) -> None:
         height=400,
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)

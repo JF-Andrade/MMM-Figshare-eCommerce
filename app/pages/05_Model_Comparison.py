@@ -117,7 +117,7 @@ def main():
         return ["", "", "", ""]
 
     styled_df = display_df.style.apply(highlight_winner, axis=1)
-    st.dataframe(styled_df, width="stretch")
+    st.dataframe(styled_df, use_container_width=True)
 
     st.markdown("---")
 
@@ -154,7 +154,7 @@ def main():
             height=350,
         )
 
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         # Training time comparison
@@ -177,7 +177,7 @@ def main():
             yaxis_title="Seconds",
         )
 
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
