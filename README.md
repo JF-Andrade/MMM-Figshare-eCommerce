@@ -264,7 +264,8 @@ MMM-Figshare-eCommerce/
 │   ├── test_model.py          # Model creation tests
 │   ├── test_model_insights.py # Insights extraction tests
 │   ├── test_optimization.py   # Optimization tests
-│   └── test_horseshoe_tau.py  # Horseshoe prior formula validation
+│   ├── test_horseshoe_tau.py  # Horseshoe prior formula validation
+│   └── test_roi.py            # ROI computation tests
 │
 ├── models/                     # Saved models and traces
 ├── mlruns/                     # MLflow experiment tracking

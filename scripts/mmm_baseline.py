@@ -61,6 +61,75 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
+def _transform_test_fold(
+    df_test: pd.DataFrame,
+    channels: list[str],
+    channel_max_dict: dict[str, float],
+    y_mean: float,
+    adstock_decay: float,
+    saturation_half: float,
+    target_col: str,
+    other_spend_sources: list[str] | None = None,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """
+    Transform test fold using train statistics to prevent data leakage.
+    
+    Args:
+        df_test: Test fold DataFrame.
+        channels: List of channel names (from train fold, may include OTHER_SPEND).
+        channel_max_dict: Max adstock values per channel (from train fold).
+        y_mean: Mean of target variable (from train fold).
+        adstock_decay: Adstock decay rate.
+        saturation_half: Half-saturation point.
+        target_col: Name of target column.
+        other_spend_sources: List of original channel names that were aggregated
+                            into OTHER_SPEND (if applicable).
+    
+    Returns:
+        (X_test, y_test) transformed using train statistics.
+    """
+    from src.config import CONTROL_COLS, SEASON_COLS, TRAFFIC_COLS
+    
+    df = df_test.copy()
+    feature_cols = []
+    
+    # Create OTHER_SPEND if needed (aggregate low-spend channels)
+    if "OTHER_SPEND" in channels and other_spend_sources:
+        other_spend = pd.Series(0.0, index=df.index)
+        for src_col in other_spend_sources:
+            if src_col in df.columns:
+                other_spend += df[src_col].fillna(0)
+        df["OTHER_SPEND"] = other_spend
+    
+    for c in channels:
+        # Skip if channel doesn't exist in test fold
+        if c not in df.columns:
+            continue
+            
+        col_adstock = f"{c}_adstock"
+        col_sat = f"{c}_sat"
+        
+        # Apply adstock (causal transformation, no leakage issue)
+        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
+        
+        # Apply saturation using TRAIN max (prevents leakage)
+        train_max = channel_max_dict.get(c, df[col_adstock].max())
+        df[col_sat] = apply_saturation_with_max(
+            df[col_adstock].values,
+            train_max,
+            saturation_half
+        )
+        feature_cols.append(col_sat)
+    
+    # Add control, seasonality, and traffic features
+    for col in CONTROL_COLS + SEASON_COLS + TRAFFIC_COLS:
+        if col in df.columns:
+            feature_cols.append(col)
+    
+    X = df[feature_cols].fillna(0)
+    y = df[target_col].values / y_mean  # Use TRAIN y_mean
+    
+    return X, y
 
 
 def train_ridge_model(
@@ -118,30 +187,33 @@ def run_ridge_baseline(
     def objective(params):
         decay, sat_half, alpha = params
         
-        # Prepare features on the DEVELOPMENT set (everything except final holdout)
-        # We apply transformations here. Since adstock is causal, it's safe to split later.
-        X, y, _, _, _ = prepare_baseline_features(
-            df_dev, 
-            adstock_decay=decay,
-            saturation_half=sat_half,
-            spend_cols=SPEND_COLS,
-            target_col=TARGET_COL,
-            min_nonzero_ratio=MIN_NONZERO_RATIO,
-            min_spend_threshold=MIN_SPEND_THRESHOLD,
-            train_end_idx=len(df_dev), # Use full dev set for preparation
-            verbose=False,
-        )
-        
-        # Expanding Window Cross-Validation
-        # 5 splits means we test on 5 distinct future periods relative to growing pasts
-        tscv = TimeSeriesSplit(n_splits=5)
+        # Gap of 2 weeks to account for adstock carryover effect
+        tscv = TimeSeriesSplit(n_splits=5, gap=2)
         scores = []
         
-        for train_index, test_index in tscv.split(X):
-            # X is a DataFrame, so .iloc works.
-            # y is a numpy array, so we must use direct indexing.
-            X_train_cv, X_test_cv = X.iloc[train_index], X.iloc[test_index]
-            y_train_cv, y_test_cv = y[train_index], y[test_index]
+        for train_index, test_index in tscv.split(df_dev):
+            # Split BEFORE transformation to prevent data leakage
+            df_train_fold = df_dev.iloc[train_index].copy()
+            df_test_fold = df_dev.iloc[test_index].copy()
+            
+            # Prepare features on TRAIN fold only
+            X_train_cv, y_train_cv, channels_cv, y_mean_cv, max_dict, other_sources = prepare_baseline_features(
+                df_train_fold,
+                adstock_decay=decay,
+                saturation_half=sat_half,
+                spend_cols=SPEND_COLS,
+                target_col=TARGET_COL,
+                min_nonzero_ratio=MIN_NONZERO_RATIO,
+                min_spend_threshold=MIN_SPEND_THRESHOLD,
+                train_end_idx=len(df_train_fold),
+                verbose=False,
+            )
+            
+            # Transform TEST fold using TRAIN statistics (prevents leakage)
+            X_test_cv, y_test_cv = _transform_test_fold(
+                df_test_fold, channels_cv, max_dict, y_mean_cv,
+                decay, sat_half, TARGET_COL, other_sources
+            )
             
             pipeline = Pipeline([
                 ("scaler", StandardScaler()),
@@ -152,7 +224,6 @@ def run_ridge_baseline(
             scores.append(pipeline.score(X_test_cv, y_test_cv))
             
         # Return negative mean R2 (minimize negative R2 = maximize R2)
-        # We use mean to find stable parameters across time
         mean_score = np.mean(scores)
         return -mean_score
 
@@ -177,7 +248,7 @@ def run_ridge_baseline(
     print(f"   CV R² (avg across 5 splits): {best_score:.4f}")
 
     # Prepare final features with best params
-    X, y, channels, y_scaler, channel_max_dict = prepare_baseline_features(
+    X, y, channels, y_mean, channel_max_dict, _ = prepare_baseline_features(
         df_weekly, 
         adstock_decay=best_decay,
         saturation_half=best_sat,
@@ -249,7 +320,7 @@ def run_ridge_baseline(
 
         # Coefficients
         coef_df = compute_ridge_coefficients(pipeline, list(X.columns), channels)
-        roi_df = compute_ridge_roi(pipeline, X, channels, y_scaler)
+        roi_df = compute_ridge_roi(pipeline, X, channels, y_mean, channel_max_dict)
 
         # Save to MLflow as JSON
         mlflow.log_dict({"metrics": metrics}, "deliverables/baseline_metrics.json")

@@ -714,7 +714,11 @@ def prepare_baseline_features(
         verbose: Print channel info.
 
     Returns:
-        (X, y, channels, y_scaler, channel_max_dict)
+        (X, y, channels, y_mean, channel_max_dict)
+        
+        y_mean: Mean of target variable used for normalization.
+               To recover original scale: y_original = y_normalized * y_mean
+        other_spend_sources: List of channel names that were aggregated into OTHER_SPEND.
     """
     df = df_weekly.copy()
     channels = [c for c in spend_cols if c in df.columns]
@@ -722,7 +726,15 @@ def prepare_baseline_features(
     channels = filter_low_variance_channels(df, channels, min_nonzero_ratio, verbose=verbose)
 
     total_spend = sum(df[c].sum() for c in channels)
+    
+    # Safety check: avoid division by zero
+    if total_spend == 0:
+        if verbose:
+            print("Warning: Total spend is zero. Returning empty features.")
+        return pd.DataFrame(), np.array([]), [], 1.0, {}
+    
     channels_filtered = []
+    other_spend_sources = []  # Track channels aggregated into OTHER_SPEND
     other_spend = pd.Series(0.0, index=df.index)
 
     for c in channels:
@@ -731,6 +743,7 @@ def prepare_baseline_features(
             channels_filtered.append(c)
         else:
             other_spend += df[c].fillna(0)
+            other_spend_sources.append(c)  # Track this channel
 
     if other_spend.sum() > 0:
         df["OTHER_SPEND"] = other_spend
@@ -780,10 +793,10 @@ def prepare_baseline_features(
     X = df[feature_cols].fillna(0)
 
     y = df[target_col].values
-    y_scaler = y.mean()
-    y = y / y_scaler
+    y_mean = y.mean()
+    y = y / y_mean
 
-    return X, y, channels_filtered, y_scaler, channel_max_dict
+    return X, y, channels_filtered, y_mean, channel_max_dict, other_spend_sources
 
 
 # =============================================================================

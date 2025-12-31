@@ -181,9 +181,12 @@ RIDGE_ALPHAS = [0.1, 1, 10, 50, 100, 500]  # Fallback for non-Bayesian
 
 # Bayesian Hyperparameter Search (gp_minimize)
 BAYESIAN_N_CALLS = 50
-BAYESIAN_ADSTOCK_BOUNDS = (0.001, 0.5)   # log-uniform
+BAYESIAN_ADSTOCK_BOUNDS = (0.001, 0.85)   # Extended for brand/awareness channels
 BAYESIAN_SATURATION_BOUNDS = (0.01, 0.5)  # log-uniform
 BAYESIAN_ALPHA_BOUNDS = (0.1, 500.0)      # log-uniform
+
+# Cross-Validation Settings
+CV_GAP_WEEKS = 2  # Gap between train/test folds to prevent adstock leakage
 
 # =============================================================================
 # 8. EXPERIMENT TRACKING (MLflow)

@@ -545,24 +545,42 @@ def compute_ridge_coefficients(
         channels: List of channel names.
 
     Returns:
-        DataFrame with feature, coefficient, type.
+        DataFrame with feature, coefficient, type, and optional warning.
     """
     coefs = pipeline.named_steps["ridge"].coef_
     intercept = pipeline.named_steps["ridge"].intercept_
 
     coef_data = []
+    warnings_issued = []
+    
     for name, coef in zip(feature_names, coefs):
         is_channel = any(c in name for c in channels)
+        warning = None
+        
+        # Validate: channel coefficients should be positive
+        if is_channel and "_sat" in name and coef < 0:
+            warning = "negative_coefficient"
+            warnings_issued.append(
+                f"⚠️ Negative coefficient for {name}: {coef:.4f}. "
+                "This may indicate multicollinearity or identification issues."
+            )
+        
         coef_data.append({
             "feature": name,
             "coefficient": float(coef),
             "type": "channel" if is_channel else "control",
+            "warning": warning,
         })
+
+    # Print warnings
+    for warning_msg in warnings_issued:
+        print(warning_msg)
 
     coef_data.append({
         "feature": "intercept",
         "coefficient": float(intercept),
         "type": "intercept",
+        "warning": None,
     })
 
     return pd.DataFrame(coef_data).sort_values("coefficient", ascending=False)

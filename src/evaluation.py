@@ -262,35 +262,64 @@ def compute_ridge_roi(
     pipeline,
     X: pd.DataFrame,
     channels: list[str],
-    y_scaler: float,
+    y_mean: float,
+    channel_max_dict: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
-    Compute approximate ROI from Ridge coefficients.
+    Compute ROI from Ridge coefficients with proper scaling reversal.
+
+    The Ridge model operates on StandardScaler-transformed features.
+    To interpret coefficients in original units, we must reverse the scaling.
+    
+    ROI Interpretation:
+    - coefficient_scaled: Raw coefficient from Ridge (after StandardScaler)
+    - coefficient_original: Coefficient reversed to pre-StandardScaler scale
+    - roi_per_saturation_unit: Revenue change when saturation increases by 1 unit
+    
+    Note: Since features are saturated (0-1 scale), this is NOT revenue per
+    dollar spent. For true monetary ROI, additional transformation is needed.
 
     Args:
         pipeline: Fitted sklearn Pipeline with Ridge.
         X: Feature DataFrame.
         channels: List of channel names.
-        y_scaler: Scaling factor for y.
+        y_mean: Mean of target variable (used for normalization).
+        channel_max_dict: Optional dict of max adstock values per channel.
 
     Returns:
-        DataFrame with channel, coefficient, roi.
+        DataFrame with channel, coefficients, and ROI metrics.
     """
+    scaler = pipeline.named_steps["scaler"]
     coefs = dict(zip(X.columns, pipeline.named_steps["ridge"].coef_))
 
     roi_data = []
     for c in channels:
-        if c in coefs:
-            roi_data.append({
-                "channel": c.replace("_SPEND", ""),
-                "coefficient": coefs[c],
-                "roi": coefs[c] * y_scaler,
-            })
-        elif f"{c}_sat" in coefs:
-            roi_data.append({
-                "channel": c.replace("_SPEND", ""),
-                "coefficient": coefs[f"{c}_sat"],
-                "roi": coefs[f"{c}_sat"] * y_scaler,
-            })
+        sat_col = f"{c}_sat"
+        
+        if sat_col in coefs:
+            col_name = sat_col
+        elif c in coefs:
+            col_name = c
+        else:
+            continue
+        
+        # Get feature index for StandardScaler reversal
+        feature_idx = list(X.columns).index(col_name)
+        sigma_X = scaler.scale_[feature_idx]
+        
+        # Revert StandardScaler: beta_original = beta_scaled / sigma_X
+        beta_scaled = coefs[col_name]
+        beta_original = beta_scaled / sigma_X
+        
+        # ROI in revenue units per saturation unit change
+        roi_saturation = beta_original * y_mean
+        
+        roi_data.append({
+            "channel": c.replace("_SPEND", ""),
+            "coefficient_scaled": float(beta_scaled),
+            "coefficient_original": float(beta_original),
+            "roi": float(roi_saturation),
+            "interpretation": "Revenue per unit saturation increase",
+        })
 
     return pd.DataFrame(roi_data).sort_values("roi", ascending=False)
