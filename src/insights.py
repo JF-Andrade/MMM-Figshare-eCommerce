@@ -736,6 +736,63 @@ def plot_roi_heatmap(
     plt.close()
 
 
+def plot_saturation_curves_hierarchical(
+    saturation_params: list[dict],
+    output_path: Path,
+    spend_range: tuple[float, float] = (0.0, 1.0),
+    n_points: int = 100,
+) -> None:
+    """
+    Plot Hill saturation curves for each channel.
+    
+    Shows how each channel's contribution saturates as spend increases.
+    Useful for understanding diminishing returns.
+    
+    Args:
+        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
+        output_path: Path to save the plot.
+        spend_range: Range of normalized spend to plot.
+        n_points: Number of points in the curve.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    x = np.linspace(spend_range[0], spend_range[1], n_points)
+    
+    colors = plt.cm.tab10.colors
+    
+    for i, params in enumerate(saturation_params):
+        L = params.get("L_mean", 0.3)
+        k = params.get("k_mean", 2.0)
+        channel = params.get("channel", f"Channel_{i}")
+        
+        # Hill saturation: x^k / (L^k + x^k)
+        y = (x ** k) / (L ** k + x ** k + 1e-8)
+        
+        ax.plot(x, y, label=f"{channel} (L={L:.2f}, k={k:.1f})", 
+                color=colors[i % len(colors)], linewidth=2)
+        
+        # Mark half-saturation point
+        ax.axvline(x=L, color=colors[i % len(colors)], linestyle='--', alpha=0.3)
+    
+    ax.set_xlabel("Normalized Spend (0-1)", fontsize=12)
+    ax.set_ylabel("Saturation Effect (0-1)", fontsize=12)
+    ax.set_title("Channel Saturation Curves (Hill Function)", fontsize=14)
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(spend_range)
+    ax.set_ylim(0, 1.05)
+    
+    # Add annotation
+    ax.text(0.02, 0.98, "Dashed lines = half-saturation points (L)",
+            transform=ax.transAxes, fontsize=8, va="top", alpha=0.7)
+    
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    
+    print(f"Saved saturation curves to {output_path}")
+
+
 # =============================================================================
 # HIERARCHICAL OPTIMIZATION (Standalone)
 # =============================================================================
