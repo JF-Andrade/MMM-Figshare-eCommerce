@@ -43,22 +43,16 @@ GEO_COL = "geo"
 MIN_WEEKS_PER_REGION = 52
 
 # Spend Channels
-# Note: META channels are aggregated into META_SPEND to avoid multicollinearity
 SPEND_COLS = [
     "GOOGLE_PAID_SEARCH_SPEND",
     "GOOGLE_SHOPPING_SPEND",
     "GOOGLE_PMAX_SPEND",
     "GOOGLE_DISPLAY_SPEND",
     "GOOGLE_VIDEO_SPEND",
-    "META_SPEND",  # Aggregated: META_FACEBOOK + META_INSTAGRAM + META_OTHER
-    "TIKTOK_SPEND",
-]
-
-# Original META columns (used for aggregation in preprocessing)
-META_COLS_TO_AGGREGATE = [
     "META_FACEBOOK_SPEND",
     "META_INSTAGRAM_SPEND",
     "META_OTHER_SPEND",
+    "TIKTOK_SPEND",
 ]
 
 # Share of Spend Columns

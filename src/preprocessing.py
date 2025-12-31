@@ -720,17 +720,7 @@ def prepare_baseline_features(
                To recover original scale: y_original = y_normalized * y_mean
         other_spend_sources: List of channel names that were aggregated into OTHER_SPEND.
     """
-    from src.config import META_COLS_TO_AGGREGATE
-    
     df = df_weekly.copy()
-    
-    # Aggregate META channels to avoid multicollinearity
-    meta_cols_present = [c for c in META_COLS_TO_AGGREGATE if c in df.columns]
-    if meta_cols_present and "META_SPEND" not in df.columns:
-        df["META_SPEND"] = df[meta_cols_present].fillna(0).sum(axis=1)
-        if verbose:
-            print(f"Aggregated {len(meta_cols_present)} META channels into META_SPEND")
-    
     channels = [c for c in spend_cols if c in df.columns]
 
     channels = filter_low_variance_channels(df, channels, min_nonzero_ratio, verbose=verbose)
