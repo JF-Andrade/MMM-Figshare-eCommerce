@@ -121,8 +121,8 @@ def geometric_adstock_pytensor(
     """
     def step(x_t, territory_t, adstock_prev, territory_prev, alpha_t):
         # If territory changes, previous adstock contributes 0 to current step
-        # We use a soft switch or multiplication mask
-        # Since territory indices are integers, we check equality
+        # Soft switch using multiplication mask
+        # Territory indices are integers - check equality
         
         # 1.0 if same territory, 0.0 if different
         is_same = pt.eq(territory_t, territory_prev)
@@ -135,19 +135,17 @@ def geometric_adstock_pytensor(
         
         return x_t + qs, territory_t
     
-    # Initialize
     init_adstock = pt.zeros_like(x[0])
     
-    # We need to pass territory_idx shifted by 1 to align "prev" in scan
-    # But standard scan passes output_prev.
-    # We will output (adstock_curr, territory_curr) to track state.
+    # NOTE: territory_idx needs to be shifted by 1 to align "prev" in scan
+    # Scan outputs (adstock_curr, territory_curr) to track state.
     
     # Initial state: adstock=zeros, territory_idx=-1 (impossible index)
     # Cast to matches territory_idx dtype (usually int32 or int64)
     init_territory = pt.as_tensor(-1, dtype="int32")
     
     # Scan sequences: x and territory_idx and alpha (if time-varying, but here alpha is usually static per group)
-    # If alpha is (n_obs, n_channels), we include it in sequences.
+    # If alpha is (n_obs, n_channels), include it in sequences.
     
     result, _ = pytensor.scan(
         fn=step,
@@ -157,7 +155,7 @@ def geometric_adstock_pytensor(
     )
     
     # Result is a tuple (adstock_trace, territory_trace)
-    # We only want adstock_trace
+    # Only adstock_trace is needed
     return result[0]
 
 

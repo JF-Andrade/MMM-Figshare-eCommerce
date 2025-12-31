@@ -130,8 +130,8 @@ HOLDOUT_WEEKS = 8
 
 # --- MCMC Settings ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 1000
-MCMC_TUNE = 500
+MCMC_DRAWS = 3000
+MCMC_TUNE = 1500
 MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 12
 MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)

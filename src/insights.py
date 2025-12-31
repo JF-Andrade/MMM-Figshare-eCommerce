@@ -731,8 +731,8 @@ def optimize_hierarchical_budget(
     """
     Optimize budget allocation using learned attributes.
     
-    Since we don't have the full PyMC model object easy to query for optimization,
-    we reconstruct the response curves using:
+    Without the full PyMC model object available for optimization,
+    response curves are reconstructed using:
     1. Current Spend & Contribution -> Estimate Scale Factor (Beta equivalent)
     2. Saturation Lambda -> Shape of curve
     
@@ -775,8 +775,8 @@ def optimize_hierarchical_budget(
         # Estimate Scale Factor A
         # Contrib = A * (1 - exp(-lam * spend))
         # A = Contrib / (1 - exp(-lam * spend))
-        # Note: If our model uses different saturation (e.g. Hill), this needs adjustment. 
-        # But our custom model uses exponential saturation.
+        # Note: If model uses different saturation (e.g. Hill), this needs adjustment. 
+        # The custom model uses exponential saturation.
         saturation_factor = 1 - np.exp(-lam * spend)
         scale = contribution / (saturation_factor + 1e-9)
         

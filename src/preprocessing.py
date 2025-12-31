@@ -837,7 +837,7 @@ def compute_temporal_features(
         
         # Black Friday Indicator (Week containing Nov 23-29 range)
         # Black Friday is the day after 4th Thursday. Earliest is Nov 23, Latest is Nov 29.
-        # We flag the week that overlaps with this period.
+        # Flag weeks that overlap with this period.
         def check_black_friday(d):
             # Check if date is in November
             if d.month == 11:
