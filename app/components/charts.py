@@ -243,3 +243,174 @@ def adstock_decay_chart(adstock: list[dict]) -> None:
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+
+def contribution_waterfall(contributions: list[dict]) -> None:
+    """
+    Render waterfall chart showing contribution breakdown by channel.
+
+    Args:
+        contributions: List of contribution records.
+    """
+    df = pd.DataFrame(contributions).sort_values("contribution", ascending=False)
+
+    fig = go.Figure(go.Waterfall(
+        orientation="v",
+        x=df["channel"],
+        y=df["contribution"],
+        textposition="outside",
+        connector={"line": {"color": "rgb(63, 63, 63)"}},
+    ))
+
+    fig.update_layout(
+        title="Channel Contribution Waterfall",
+        xaxis_title="Channel",
+        yaxis_title="Contribution (log scale)",
+        height=450,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def roi_with_uncertainty_chart(roi_hdi: list[dict]) -> None:
+    """
+    Render ROI chart with uncertainty intervals (HDI).
+
+    Args:
+        roi_hdi: List of ROI records with 'roi_mean', 'roi_hdi_low', 'roi_hdi_high'.
+    """
+    if not roi_hdi:
+        st.info("ROI HDI data not available.")
+        return
+
+    df = pd.DataFrame(roi_hdi)
+    if "roi_mean" not in df.columns:
+        st.warning("ROI HDI columns missing.")
+        return
+
+    df = df.sort_values("roi_mean", ascending=True)
+
+    fig = go.Figure()
+
+    # Error bars
+    fig.add_trace(go.Bar(
+        name="ROI",
+        x=df["roi_mean"],
+        y=df["channel"],
+        orientation="h",
+        error_x=dict(
+            type="data",
+            symmetric=False,
+            array=df["roi_hdi_high"] - df["roi_mean"],
+            arrayminus=df["roi_mean"] - df["roi_hdi_low"],
+        ),
+        marker_color="steelblue",
+    ))
+
+    fig.add_vline(x=1.0, line_dash="dash", line_color="gray", annotation_text="Break-even")
+
+    fig.update_layout(
+        title="Channel ROI with 94% HDI Intervals",
+        xaxis_title="ROI (with uncertainty)",
+        yaxis_title="Channel",
+        height=400,
+        showlegend=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def spend_share_chart(contributions: list[dict]) -> None:
+    """
+    Render stacked bar chart comparing spend share vs contribution share.
+
+    Args:
+        contributions: List of contribution records with 'total_spend' and 'contribution'.
+    """
+    df = pd.DataFrame(contributions)
+    
+    if "total_spend" not in df.columns or "contribution" not in df.columns:
+        st.warning("Spend and contribution data required.")
+        return
+
+    # Calculate shares
+    df["spend_share"] = df["total_spend"] / df["total_spend"].sum() * 100
+    df["contribution_share"] = df["contribution"] / df["contribution"].sum() * 100
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name="Spend Share",
+        x=df["channel"],
+        y=df["spend_share"],
+        marker_color="steelblue",
+    ))
+
+    fig.add_trace(go.Bar(
+        name="Contribution Share",
+        x=df["channel"],
+        y=df["contribution_share"],
+        marker_color="coral",
+    ))
+
+    fig.update_layout(
+        title="Spend Share vs Contribution Share",
+        xaxis_title="Channel",
+        yaxis_title="Share (%)",
+        barmode="group",
+        height=400,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def response_curves_chart(contributions: list[dict], saturation: list[dict]) -> None:
+    """
+    Render response curves showing diminishing returns for each channel.
+
+    Args:
+        contributions: Contribution data with total_spend.
+        saturation: Saturation parameters with L_mean and k_mean.
+    """
+    import numpy as np
+
+    if not saturation:
+        st.info("Saturation data not available.")
+        return
+
+    fig = go.Figure()
+
+    # Get current spend levels for reference
+    spend_map = {}
+    if contributions:
+        for c in contributions:
+            spend_map[c["channel"]] = c.get("total_spend", 0)
+
+    for ch in saturation:
+        L = ch.get("L_mean", 0.3)
+        k = ch.get("k_mean", 2.0)
+        channel = ch["channel"]
+        
+        # Generate spend range [0, 2x current] normalized
+        current_spend = spend_map.get(channel, 0.5)
+        x_range = np.linspace(0.01, min(2.0, 1.0), 100)
+        
+        # Hill response: contribution = beta * hill(x)
+        # Marginal response approximation
+        y = (x_range ** k) / (L ** k + x_range ** k + 1e-8)
+
+        fig.add_trace(go.Scatter(
+            x=x_range * 100,  # Convert to percentage
+            y=y,
+            mode="lines",
+            name=channel,
+        ))
+
+    fig.update_layout(
+        title="Channel Response Curves (Normalized)",
+        xaxis_title="Spend Level (% of max)",
+        yaxis_title="Response (saturation effect)",
+        height=400,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
