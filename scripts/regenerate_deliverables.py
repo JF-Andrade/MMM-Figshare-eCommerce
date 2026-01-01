@@ -1,0 +1,301 @@
+"""
+Regenerate Dashboard Deliverables from Saved Model.
+
+This script loads a saved model trace (idata) from MLflow and regenerates
+all deliverables required by the dashboard, including the new territory-level
+parameters and optimizations.
+
+Usage:
+    python scripts/regenerate_deliverables.py --run-id <RUN_ID>
+    python scripts/regenerate_deliverables.py --latest
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import arviz as az
+import mlflow
+import numpy as np
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config import MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME
+from src.models.hierarchical_bayesian import (
+    compute_channel_contributions,
+    compute_channel_contributions_by_territory,
+    compute_roi_with_hdi,
+)
+from src.insights import (
+    optimize_hierarchical_budget,
+    optimize_budget_by_territory,
+)
+
+
+def get_latest_hierarchical_run() -> str:
+    """Get the latest hierarchical model run ID."""
+    from mlflow import MlflowClient
+    
+    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+    experiment = client.get_experiment_by_name(MLFLOW_EXPERIMENT_NAME)
+    
+    if experiment is None:
+        raise ValueError(f"Experiment '{MLFLOW_EXPERIMENT_NAME}' not found")
+    
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string="params.model_type LIKE '%hierarchical%'",
+        order_by=["start_time DESC"],
+        max_results=1,
+    )
+    
+    if not runs:
+        raise ValueError("No hierarchical model runs found")
+    
+    return runs[0].info.run_id
+
+
+def load_idata_from_run(run_id: str) -> az.InferenceData:
+    """Download and load idata from MLflow artifacts."""
+    from mlflow import MlflowClient
+    
+    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+    
+    # Download the trace file
+    local_path = client.download_artifacts(run_id, "mmm_hierarchical_trace.nc")
+    print(f"Loaded idata from: {local_path}")
+    
+    return az.from_netcdf(local_path)
+
+
+def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
+    """Load and prepare model data."""
+    from src.data_loader import load_data, get_valid_regions
+    from src.preprocessing import create_hierarchy_indices
+    from src.config import SPEND_COLS, MIN_WEEKS_PER_REGION, HOLDOUT_WEEKS
+    
+    df = load_data(data_path)
+    regions = get_valid_regions(df, MIN_WEEKS_PER_REGION)
+    
+    # Filter to valid regions
+    df = df[df["territory"].isin(regions)].copy()
+    
+    # Create indices
+    indices = create_hierarchy_indices(df, regions)
+    
+    # Get spend columns that exist
+    spend_cols = [c for c in SPEND_COLS if c in df.columns]
+    
+    # Split train/test
+    train_mask = df.groupby("territory").cumcount() < (
+        df.groupby("territory")["territory"].transform("count") - HOLDOUT_WEEKS
+    )
+    
+    X_spend_train = df.loc[train_mask, spend_cols].values
+    territory_idx_train = indices["territory_idx"][train_mask].values
+    
+    return df, {
+        "X_spend_train": X_spend_train,
+        "territory_idx_train": territory_idx_train,
+        "channel_names": spend_cols,
+        "regions": regions,
+        "n_obs_train": len(X_spend_train),
+    }
+
+
+def regenerate_deliverables(
+    idata: az.InferenceData,
+    m_data: dict,
+    run_id: str,
+) -> dict:
+    """Regenerate all deliverables from idata."""
+    
+    deliverables = {}
+    regions = m_data["regions"]
+    channel_names = m_data["channel_names"]
+    X_spend_train = m_data["X_spend_train"]
+    territory_idx_train = m_data["territory_idx_train"]
+    n_obs_train = m_data["n_obs_train"]
+    
+    print("\n1. Computing channel contributions (global)...")
+    contrib_df = compute_channel_contributions(
+        idata,
+        X_spend_train,
+        territory_idx_train,
+        channel_names,
+    )
+    deliverables["contributions"] = contrib_df.to_dict(orient="records")
+    
+    print("2. Computing ROI...")
+    roi_data = []
+    for _, row in contrib_df.iterrows():
+        roi_data.append({
+            "channel": row["channel"],
+            "roi": float(row["roi"]),
+            "total_spend": float(row["total_spend"]),
+            "contribution": float(row["contribution"]),
+        })
+    deliverables["roi"] = roi_data
+    
+    print("3. Computing ROI with HDI intervals...")
+    roi_hdi_df = compute_roi_with_hdi(
+        idata,
+        X_spend_train,
+        territory_idx_train,
+        channel_names,
+        hdi_prob=0.94,
+        n_samples=500,
+    )
+    deliverables["roi_hdi"] = roi_hdi_df.to_dict(orient="records")
+    
+    print("4. Extracting global adstock/saturation parameters...")
+    summary = az.summary(idata, var_names=["alpha_channel", "L_channel", "k_channel"])
+    
+    adstock_params = []
+    saturation_params = []
+    for i, channel in enumerate(channel_names):
+        try:
+            alpha = summary.loc[f"alpha_channel[{i}]", "mean"]
+            L = summary.loc[f"L_channel[{i}]", "mean"]
+            k = summary.loc[f"k_channel[{i}]", "mean"]
+            
+            adstock_params.append({"channel": channel, "alpha_mean": float(alpha)})
+            saturation_params.append({
+                "channel": channel,
+                "L_mean": float(L),
+                "k_mean": float(k),
+                "lam_mean": float(1.0 / (L + 1e-8))
+            })
+        except KeyError:
+            pass
+    
+    deliverables["adstock"] = adstock_params
+    deliverables["saturation"] = saturation_params
+    
+    print("5. Extracting TERRITORY-LEVEL parameters...")
+    alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
+    L_territory = idata.posterior["L_territory"].mean(dim=["chain", "draw"]).values
+    k_channel_values = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
+    
+    adstock_territory_params = []
+    saturation_territory_params = []
+    
+    for t_idx, territory in enumerate(regions):
+        for c_idx, channel in enumerate(channel_names):
+            adstock_territory_params.append({
+                "territory": territory,
+                "channel": channel,
+                "alpha_mean": float(alpha_territory[t_idx, c_idx]),
+            })
+            saturation_territory_params.append({
+                "territory": territory,
+                "channel": channel,
+                "L_mean": float(L_territory[t_idx, c_idx]),
+                "k_mean": float(k_channel_values[c_idx]),
+            })
+    
+    deliverables["adstock_territory"] = adstock_territory_params
+    deliverables["saturation_territory"] = saturation_territory_params
+    
+    print("6. Computing contributions BY TERRITORY...")
+    contrib_by_territory_df = compute_channel_contributions_by_territory(
+        idata,
+        X_spend_train,
+        territory_idx_train,
+        channel_names,
+        regions,
+    )
+    deliverables["contributions_territory"] = contrib_by_territory_df.to_dict(orient="records")
+    
+    # Regional data (flat format)
+    deliverables["regional"] = contrib_by_territory_df.rename(columns={"territory": "region"}).to_dict(orient="records")
+    
+    print("7. Running global budget optimization...")
+    total_budget = contrib_df["total_spend"].sum()
+    optimization_result = optimize_hierarchical_budget(
+        contrib_df=contrib_df,
+        saturation_params=saturation_params,
+        total_budget=total_budget,
+        n_obs=n_obs_train,
+        budget_bounds_pct=(0.70, 1.30)
+    )
+    deliverables["optimization"] = optimization_result["allocation"]
+    deliverables["revenue_lift"] = optimization_result["metrics"]
+    
+    print("8. Running budget optimization BY TERRITORY...")
+    optimization_by_territory = []
+    lift_by_territory = []
+    
+    for territory in regions:
+        terr_contrib = contrib_by_territory_df[contrib_by_territory_df["territory"] == territory]
+        terr_sat_params = [p for p in saturation_territory_params if p["territory"] == territory]
+        
+        terr_opt = optimize_budget_by_territory(
+            contrib_territory_df=terr_contrib,
+            saturation_params=terr_sat_params,
+            territory=territory,
+        )
+        optimization_by_territory.extend(terr_opt["allocation"])
+        if terr_opt["metrics"].get("success"):
+            lift_by_territory.append(terr_opt["metrics"])
+    
+    deliverables["optimization_territory"] = optimization_by_territory
+    deliverables["lift_by_territory"] = lift_by_territory
+    
+    print(f"\nGenerated {len(deliverables)} deliverables")
+    return deliverables
+
+
+def save_deliverables_to_mlflow(deliverables: dict, run_id: str) -> None:
+    """Save deliverables to the existing MLflow run."""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    
+    with mlflow.start_run(run_id=run_id):
+        for name, data in deliverables.items():
+            mlflow.log_dict({name: data}, f"deliverables/{name}.json")
+            print(f"  Saved: deliverables/{name}.json")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Regenerate dashboard deliverables")
+    parser.add_argument("--run-id", type=str, help="MLflow run ID to use")
+    parser.add_argument("--latest", action="store_true", help="Use latest hierarchical run")
+    parser.add_argument("--data-path", type=str, default="data/processed/mmm_data.parquet")
+    args = parser.parse_args()
+    
+    # Determine run ID
+    if args.run_id:
+        run_id = args.run_id
+    elif args.latest:
+        run_id = get_latest_hierarchical_run()
+        print(f"Using latest run: {run_id}")
+    else:
+        print("Error: Specify --run-id <ID> or --latest")
+        sys.exit(1)
+    
+    # Load idata
+    print(f"\nLoading model from run: {run_id}")
+    idata = load_idata_from_run(run_id)
+    
+    # Load data
+    data_path = PROJECT_ROOT / args.data_path
+    print(f"Loading data from: {data_path}")
+    df, m_data = load_model_data(data_path)
+    
+    # Regenerate
+    deliverables = regenerate_deliverables(idata, m_data, run_id)
+    
+    # Save
+    print("\nSaving deliverables to MLflow...")
+    save_deliverables_to_mlflow(deliverables, run_id)
+    
+    print("\nDone! Refresh the dashboard to see updated data.")
+
+
+if __name__ == "__main__":
+    main()
