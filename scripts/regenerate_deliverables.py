@@ -136,43 +136,54 @@ def load_idata_from_run(run_id: str) -> az.InferenceData:
 
 
 def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
-    """Load and prepare model data (all territories, no currency filter)."""
-    from src.data_loader import load_data, get_valid_regions
+    """
+    Load prepared model data from hierarchical_train.parquet.
+    
+    This uses the SAME normalized data that the model was trained on,
+    ensuring consistency in ROI calculations.
+    """
     from src.preprocessing import create_hierarchy_indices
-    from src.config import SPEND_COLS, MIN_WEEKS_PER_REGION, HOLDOUT_WEEKS
+    from src.config import SPEND_COLS, GEO_COL
     
-    # Load ALL data without currency filter (model uses all 18 territories)
-    df = load_data(data_path, currency=None)
+    # Use pre-prepared training data (saved by pipeline)
+    inspection_dir = data_path.parent.parent / "inspection"
+    train_parquet = inspection_dir / "hierarchical_train.parquet"
     
-    # Use same column name as get_valid_regions
-    region_col = "TERRITORY_NAME"
+    if not train_parquet.exists():
+        raise FileNotFoundError(
+            f"Prepared training data not found: {train_parquet}\n"
+            "Run the hierarchical pipeline first to generate this file."
+        )
     
-    regions = get_valid_regions(df, MIN_WEEKS_PER_REGION, region_col=region_col)
+    df_train = pd.read_parquet(train_parquet)
+    print(f"Loaded prepared training data: {df_train.shape}")
     
-    # Filter to valid regions
-    df = df[df[region_col].isin(regions)].copy()
+    # Get normalized spend columns (used by model)
+    spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df_train.columns]
     
-    # Create indices - pass column name, not region list
-    # Returns: (territory_idx, territory_names)
-    territory_idx, territory_names = create_hierarchy_indices(df, geo_col=region_col)
+    if not spend_norm_cols:
+        raise ValueError("No normalized spend columns found. Check pipeline output.")
     
-    # Get spend columns that exist
-    spend_cols = [c for c in SPEND_COLS if c in df.columns]
+    print(f"Using {len(spend_norm_cols)} normalized spend columns")
     
-    # Split train/test
-    train_mask = df.groupby(region_col).cumcount() < (
-        df.groupby(region_col)[region_col].transform("count") - HOLDOUT_WEEKS
-    )
+    # Get territories from data
+    region_col = GEO_COL if GEO_COL in df_train.columns else "TERRITORY_NAME"
+    territory_idx, territory_names = create_hierarchy_indices(df_train, geo_col=region_col)
     
-    X_spend_train = df.loc[train_mask, spend_cols].values
-    territory_idx_train = territory_idx[train_mask]
+    # Extract normalized spend
+    X_spend_train = df_train[spend_norm_cols].fillna(0).values
     
-    return df, {
+    # Channel names without _norm suffix
+    channel_names = [c.replace("_norm", "").replace("_SPEND", "") for c in spend_norm_cols]
+    
+    return df_train, {
         "X_spend_train": X_spend_train,
-        "territory_idx_train": territory_idx_train,
-        "channel_names": spend_cols,
-        "regions": territory_names,  # Use names from create_hierarchy_indices
+        "territory_idx_train": territory_idx,
+        "channel_names": channel_names,
+        "regions": territory_names,
         "n_obs_train": len(X_spend_train),
+        "df_train": df_train,  # Keep for spend total calculation
+        "spend_cols_raw": [c.replace("_norm", "") for c in spend_norm_cols],
     }
 
 
@@ -186,9 +197,11 @@ def regenerate_deliverables(
     deliverables = {}
     regions = m_data["regions"]
     channel_names = m_data["channel_names"]
-    X_spend_train = m_data["X_spend_train"]
+    X_spend_train = m_data["X_spend_train"]  # Normalized [0,1]
     territory_idx_train = m_data["territory_idx_train"]
     n_obs_train = m_data["n_obs_train"]
+    df_train = m_data["df_train"]
+    spend_cols_raw = m_data["spend_cols_raw"]  # Raw spend column names
     
     print("\n1. Computing channel contributions (global)...")
     contrib_df = compute_channel_contributions(
@@ -197,6 +210,16 @@ def regenerate_deliverables(
         territory_idx_train,
         channel_names,
     )
+    
+    # Override total_spend with RAW spend values (not normalized)
+    # This gives ROI in correct units (contribution per $ spent)
+    for i, raw_col in enumerate(spend_cols_raw):
+        if raw_col in df_train.columns:
+            contrib_df.loc[i, "total_spend"] = df_train[raw_col].sum()
+    
+    # Recalculate ROI with raw spend
+    contrib_df["roi"] = contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
+    
     deliverables["contributions"] = contrib_df.to_dict(orient="records")
     
     print("2. Computing ROI...")
