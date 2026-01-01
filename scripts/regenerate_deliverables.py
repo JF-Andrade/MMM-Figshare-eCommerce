@@ -142,14 +142,18 @@ def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
     from src.config import SPEND_COLS, MIN_WEEKS_PER_REGION, HOLDOUT_WEEKS
     
     df = load_data(data_path)
-    regions = get_valid_regions(df, MIN_WEEKS_PER_REGION)
     
-    # Filter to valid regions (use TERRITORY_NAME, same as get_valid_regions)
+    # Use same column name as get_valid_regions
     region_col = "TERRITORY_NAME"
+    
+    regions = get_valid_regions(df, MIN_WEEKS_PER_REGION, region_col=region_col)
+    
+    # Filter to valid regions
     df = df[df[region_col].isin(regions)].copy()
     
-    # Create indices
-    indices = create_hierarchy_indices(df, regions)
+    # Create indices - pass column name, not region list
+    # Returns: (territory_idx, territory_names)
+    territory_idx, territory_names = create_hierarchy_indices(df, geo_col=region_col)
     
     # Get spend columns that exist
     spend_cols = [c for c in SPEND_COLS if c in df.columns]
@@ -160,13 +164,13 @@ def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
     )
     
     X_spend_train = df.loc[train_mask, spend_cols].values
-    territory_idx_train = indices["territory_idx"][train_mask].values
+    territory_idx_train = territory_idx[train_mask]
     
     return df, {
         "X_spend_train": X_spend_train,
         "territory_idx_train": territory_idx_train,
         "channel_names": spend_cols,
-        "regions": regions,
+        "regions": territory_names,  # Use names from create_hierarchy_indices
         "n_obs_train": len(X_spend_train),
     }
 
