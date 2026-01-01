@@ -102,9 +102,9 @@ def main():
     st.subheader("Top Regional Performers")
 
     for i, (_, region) in enumerate(regional_summary.head(3).iterrows(), 1):
-        medal = ["🥇", "🥈", "🥉"][i - 1]
+        rank = ["1st", "2nd", "3rd"][i - 1]
         st.markdown(
-            f"**{medal} {region['region']}** - "
+            f"**{rank}: {region['region']}** - "
             f"Avg ROI: {region['avg_roi']:.2f}x, "
             f"Best Channel: {region['best_channel']}"
         )

@@ -23,7 +23,7 @@ def shared_sidebar() -> dict | None:
     Returns:
         Loaded deliverables dict, or None if no runs available.
     """
-    st.sidebar.title("📊 MMM Dashboard")
+    st.sidebar.title("MMM Dashboard")
     st.sidebar.markdown("---")
     
     try:
@@ -35,17 +35,26 @@ def shared_sidebar() -> dict | None:
             st.sidebar.info("Run `python scripts/mmm_hierarchical.py` first.")
             return None
         
-        # Run selector
+        # Run selector - use session_state to persist selection across pages
         st.sidebar.subheader("Select Run")
         run_options = {
             f"{r['run_name']} (R²: {r['r2_test']:.3f})" if r['r2_test'] else r['run_name']: r['run_id']
             for r in runs
         }
         
+        # Find current selection index (default to 0 if not set)
+        current_run_id = st.session_state.get("run_id")
+        default_index = 0
+        if current_run_id:
+            for i, (label, rid) in enumerate(run_options.items()):
+                if rid == current_run_id:
+                    default_index = i
+                    break
+        
         selected_label = st.sidebar.selectbox(
             "Model Run",
             options=list(run_options.keys()),
-            index=0,
+            index=default_index,
             label_visibility="collapsed",
         )
         
@@ -71,7 +80,7 @@ def shared_sidebar() -> dict | None:
         
         # Navigation help
         st.sidebar.markdown("---")
-        st.sidebar.caption("📖 **Pages**")
+        st.sidebar.caption("**Pages**")
         st.sidebar.markdown("""
         - Executive Summary
         - Budget Optimization
@@ -95,7 +104,7 @@ def page_header(title: str, subtitle: str = None) -> None:
         title: Page title (without emoji prefix).
         subtitle: Optional subtitle/description.
     """
-    st.title(f"📊 {title}")
+    st.title(title)
     if subtitle:
         st.caption(subtitle)
     st.markdown("---")
@@ -110,7 +119,7 @@ def init_page_config(page_title: str) -> None:
     """
     st.set_page_config(
         page_title=f"MMM | {page_title}",
-        page_icon="📊",
+        page_icon="chart_with_upwards_trend",
         layout="wide",
         initial_sidebar_state="expanded",
     )
