@@ -211,13 +211,35 @@ def regenerate_deliverables(
         channel_names,
     )
     
-    # Override total_spend with RAW spend values (not normalized)
-    # This gives ROI in correct units (contribution per $ spent)
+    # CRITICAL FIX: Model predicts y_log (log1p transformed revenue)
+    # Contributions are in LOG SCALE - they represent log-revenue increments
+    # To convert to linear $ scale: exp(contribution) - 1 gives approximate revenue lift
+    # But for ROI, we need to compare to actual spend
+    
+    # Get total original revenue for scaling
+    if "ALL_PURCHASES_ORIGINAL_PRICE" in df_train.columns:
+        total_revenue = df_train["ALL_PURCHASES_ORIGINAL_PRICE"].sum()
+        mean_log_revenue = df_train["y_log"].mean()
+    else:
+        total_revenue = np.expm1(df_train["y_log"].sum())
+        mean_log_revenue = df_train["y_log"].mean()
+    
+    print(f"   Total revenue: {total_revenue:,.0f}")
+    print(f"   Mean log revenue: {mean_log_revenue:.2f}")
+    
+    # Override total_spend with RAW spend values
     for i, raw_col in enumerate(spend_cols_raw):
         if raw_col in df_train.columns:
             contrib_df.loc[i, "total_spend"] = df_train[raw_col].sum()
     
-    # Recalculate ROI with raw spend
+    # Convert contribution from log scale to approximate $ contribution
+    # Interpretation: each unit of beta*x_sat adds that much to log(revenue)
+    # Approximate $ contribution = total_revenue * (exp(contrib_log/n_obs) - 1) * n_obs
+    # Simplified: contrib_$ ≈ contribution_log * (revenue / mean_log_y)
+    contrib_df["contribution_log"] = contrib_df["contribution"]
+    contrib_df["contribution"] = contrib_df["contribution_log"] * (total_revenue / (mean_log_revenue * n_obs_train + 1e-8))
+    
+    # Recalculate ROI with linear scale contribution and raw spend
     contrib_df["roi"] = contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
     
     deliverables["contributions"] = contrib_df.to_dict(orient="records")
