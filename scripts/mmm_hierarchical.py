@@ -617,7 +617,7 @@ def run_hierarchical(
 
         mlflow.log_dict({"regional": regional_data_list}, "deliverables/regional.json")
         
-        # Log Adstock/Saturation Params
+        # Log Adstock/Saturation Params (Global + Territory)
         # NOTE: Model uses L_channel (half-saturation) and k_channel (steepness)
         summary = az.summary(idata, var_names=["alpha_channel", "L_channel", "k_channel"])
         adstock_params = []
@@ -630,18 +630,45 @@ def run_hierarchical(
                 k = summary.loc[f"k_channel[{i}]", "mean"]
                 
                 adstock_params.append({"channel": channel, "alpha_mean": float(alpha)})
-                # Store L and k for saturation. For optimization, we use L as the scale factor.
                 saturation_params.append({
                     "channel": channel, 
-                    "L_mean": float(L),  # Half-saturation point
-                    "k_mean": float(k),  # Steepness
-                    "lam_mean": float(1.0 / (L + 1e-8))  # Approximate lambda for old interface compatibility
+                    "L_mean": float(L),
+                    "k_mean": float(k),
+                    "lam_mean": float(1.0 / (L + 1e-8))
                 })
             except KeyError:
                 pass
-                
+        
+        # Extract TERRITORY-LEVEL parameters
+        alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
+        L_territory = idata.posterior["L_territory"].mean(dim=["chain", "draw"]).values
+        k_channel_values = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
+        
+        adstock_territory_params = []
+        saturation_territory_params = []
+        
+        for t_idx, territory in enumerate(regions):
+            for c_idx, channel in enumerate(m_data["channel_names"]):
+                adstock_territory_params.append({
+                    "territory": territory,
+                    "channel": channel,
+                    "alpha_mean": float(alpha_territory[t_idx, c_idx]),
+                })
+                saturation_territory_params.append({
+                    "territory": territory,
+                    "channel": channel,
+                    "L_mean": float(L_territory[t_idx, c_idx]),
+                    "k_mean": float(k_channel_values[c_idx]),
+                })
+        
+        # Save global params
         mlflow.log_dict({"adstock": adstock_params}, "deliverables/adstock.json")
         mlflow.log_dict({"saturation": saturation_params}, "deliverables/saturation.json")
+        
+        # Save territory params
+        mlflow.log_dict({"adstock_territory": adstock_territory_params}, "deliverables/adstock_territory.json")
+        mlflow.log_dict({"saturation_territory": saturation_territory_params}, "deliverables/saturation_territory.json")
+        print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
 
         # 7. ROI with Uncertainty (HDI)
         print("\nComputing ROI with uncertainty intervals...")
@@ -689,6 +716,45 @@ def run_hierarchical(
         
         mlflow.log_dict({"optimization": optimization_data}, "deliverables/optimization.json")
         mlflow.log_dict({"revenue_lift": lift_metrics}, "deliverables/revenue_lift.json")
+
+        # 9b. Optimize Budget BY TERRITORY
+        print("\nComputing optimization by territory...")
+        from src.insights import optimize_budget_by_territory
+        from src.models.hierarchical_bayesian import compute_channel_contributions_by_territory
+        
+        # Get contributions by territory
+        contrib_by_territory_df = compute_channel_contributions_by_territory(
+            idata,
+            m_data["X_spend_train"],
+            m_data["territory_idx_train"],
+            m_data["channel_names"],
+            regions,
+        )
+        mlflow.log_dict(
+            {"contributions_territory": contrib_by_territory_df.to_dict(orient="records")},
+            "deliverables/contributions_territory.json"
+        )
+        
+        # Optimize for each territory
+        optimization_by_territory = []
+        lift_by_territory = []
+        
+        for territory in regions:
+            terr_contrib = contrib_by_territory_df[contrib_by_territory_df["territory"] == territory]
+            terr_sat_params = [p for p in saturation_territory_params if p["territory"] == territory]
+            
+            terr_opt = optimize_budget_by_territory(
+                contrib_territory_df=terr_contrib,
+                saturation_params=terr_sat_params,
+                territory=territory,
+            )
+            optimization_by_territory.extend(terr_opt["allocation"])
+            if terr_opt["metrics"].get("success"):
+                lift_by_territory.append(terr_opt["metrics"])
+        
+        mlflow.log_dict({"optimization_territory": optimization_by_territory}, "deliverables/optimization_territory.json")
+        mlflow.log_dict({"lift_by_territory": lift_by_territory}, "deliverables/lift_by_territory.json")
+        print(f"Optimization completed for {len(lift_by_territory)} territories")
 
         # Save deliverables (validated)
         run_id = mlflow.active_run().info.run_id

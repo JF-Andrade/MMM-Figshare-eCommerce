@@ -86,6 +86,35 @@ def main():
     else:
         st.warning("Adstock data not available.")
 
+    # Parameters by Territory (new)
+    adstock_territory = deliverables.get("adstock_territory")
+    saturation_territory = deliverables.get("saturation_territory")
+    
+    if adstock_territory or saturation_territory:
+        with st.expander("View Parameters by Territory"):
+            import pandas as pd
+            
+            if saturation_territory:
+                sat_terr_df = pd.DataFrame(saturation_territory)
+                territories = sat_terr_df["territory"].unique().tolist()
+                selected_terr = st.selectbox("Territory", territories, key="terr_params")
+                
+                st.subheader(f"Parameters for {selected_terr}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Saturation (L, k)**")
+                    terr_sat = sat_terr_df[sat_terr_df["territory"] == selected_terr][["channel", "L_mean", "k_mean"]]
+                    st.dataframe(terr_sat, use_container_width=True)
+                
+                with col2:
+                    if adstock_territory:
+                        st.markdown("**Adstock (alpha)**")
+                        adstock_terr_df = pd.DataFrame(adstock_territory)
+                        terr_ads = adstock_terr_df[adstock_terr_df["territory"] == selected_terr][["channel", "alpha_mean"]]
+                        st.dataframe(terr_ads, use_container_width=True)
+
     st.markdown("---")
 
     # Saturation parameters

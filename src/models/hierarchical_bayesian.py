@@ -809,3 +809,68 @@ def compute_roi_with_hdi(
         "total_spend": total_spend,
     })
 
+
+def compute_channel_contributions_by_territory(
+    idata: az.InferenceData,
+    X_spend: "NDArray",
+    territory_idx: "NDArray",
+    channel_names: list[str],
+    territory_names: list[str],
+) -> pd.DataFrame:
+    """
+    Compute channel contributions PER TERRITORY.
+    
+    Args:
+        idata: ArviZ InferenceData with posterior samples
+        X_spend: Raw spend array (n_obs, n_channels)
+        territory_idx: Territory index for each observation (n_obs,)
+        channel_names: List of channel names
+        territory_names: List of territory names
+    
+    Returns:
+        DataFrame with columns: territory, channel, total_spend, contribution, roi, n_obs
+    """
+    # Extract posterior means
+    beta_channel = idata.posterior["beta_channel"].mean(dim=["chain", "draw"]).values
+    beta_territory = idata.posterior["beta_channel_territory"].mean(dim=["chain", "draw"]).values
+    alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
+    L_territory = idata.posterior["L_territory"].mean(dim=["chain", "draw"]).values
+    k_channel = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
+    
+    n_obs, n_channels = X_spend.shape
+    n_territories = len(territory_names)
+    
+    # Accumulate by territory and channel
+    contrib_by_terr = np.zeros((n_territories, n_channels))
+    spend_by_terr = np.zeros((n_territories, n_channels))
+    obs_by_terr = np.zeros(n_territories)
+    
+    for c in range(n_channels):
+        x_adstock = geometric_adstock_numpy(X_spend[:, c], alpha_territory[:, c], territory_idx)
+        L_obs = L_territory[territory_idx, c]
+        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
+        
+        for t in range(n_obs):
+            t_idx = territory_idx[t]
+            contrib = (beta_channel[c] + beta_territory[t_idx, c]) * x_sat[t]
+            contrib_by_terr[t_idx, c] += contrib
+            spend_by_terr[t_idx, c] += X_spend[t, c]
+            if c == 0:
+                obs_by_terr[t_idx] += 1
+    
+    # Flatten to DataFrame
+    results = []
+    for t_idx, territory in enumerate(territory_names):
+        for c_idx, channel in enumerate(channel_names):
+            spend = spend_by_terr[t_idx, c_idx]
+            contrib = contrib_by_terr[t_idx, c_idx]
+            results.append({
+                "territory": territory,
+                "channel": channel,
+                "total_spend": float(spend),
+                "contribution": float(contrib),
+                "roi": float(contrib / (spend + 1e-8)),
+                "n_obs": int(obs_by_terr[t_idx]),
+            })
+    
+    return pd.DataFrame(results)

@@ -155,12 +155,17 @@ def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> di
         "roi",
         "roi_hdi",
         "saturation",
+        "saturation_territory",
         "adstock",
+        "adstock_territory",
         "contributions",
+        "contributions_territory",
         "optimization",
+        "optimization_territory",
         "marginal_roas",
         "regional",
         "revenue_lift",
+        "lift_by_territory",
     ]
 
     deliverables = {}

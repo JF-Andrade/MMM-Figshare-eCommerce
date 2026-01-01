@@ -29,8 +29,26 @@ def main():
         st.warning("No model data available. Run the hierarchical model first.")
         return
 
-    optimization = deliverables.get("optimization")
-    lift = deliverables.get("revenue_lift")
+    # Territory selector
+    optimization_territory = deliverables.get("optimization_territory")
+    
+    if optimization_territory:
+        territories = sorted(set(o["territory"] for o in optimization_territory))
+        view_mode = st.radio("View Mode", ["Global", "By Territory"], horizontal=True)
+        
+        if view_mode == "By Territory":
+            selected_territory = st.selectbox("Select Territory", territories)
+            optimization = [o for o in optimization_territory if o["territory"] == selected_territory]
+            
+            # Get lift for selected territory
+            lift_by_territory = deliverables.get("lift_by_territory", [])
+            lift = next((l for l in lift_by_territory if l.get("territory") == selected_territory), None)
+        else:
+            optimization = deliverables.get("optimization")
+            lift = deliverables.get("revenue_lift")
+    else:
+        optimization = deliverables.get("optimization")
+        lift = deliverables.get("revenue_lift")
 
     if not optimization:
         st.warning("Optimization data not available.")

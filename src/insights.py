@@ -963,3 +963,133 @@ def optimize_hierarchical_budget(
         }
     }
 
+
+def optimize_budget_by_territory(
+    contrib_territory_df: pd.DataFrame,
+    saturation_params: list[dict],
+    territory: str,
+    budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
+) -> dict:
+    """
+    Optimize budget allocation for a SINGLE TERRITORY.
+    
+    Args:
+        contrib_territory_df: DataFrame with channel, total_spend, contribution, n_obs for ONE territory
+        saturation_params: List of dicts with channel, L_mean, k_mean for this territory
+        territory: Territory name
+        budget_bounds_pct: Min/Max spend multiplier
+    
+    Returns:
+        Dict with 'allocation' and 'metrics' for this territory
+    """
+    from scipy.optimize import minimize, LinearConstraint
+    
+    def hill_saturation(x, L, k):
+        eps = 1e-8
+        x_safe = max(x, eps)
+        L_safe = max(L, eps)
+        return (x_safe ** k) / (L_safe ** k + x_safe ** k + eps)
+    
+    if contrib_territory_df.empty or not saturation_params:
+        return {"allocation": [], "metrics": {"territory": territory, "success": False}}
+    
+    # Get n_obs for this territory
+    n_obs = int(contrib_territory_df["n_obs"].iloc[0]) if "n_obs" in contrib_territory_df.columns else 1
+    param_map = {p["channel"]: p for p in saturation_params}
+    
+    model_data = []
+    for _, row in contrib_territory_df.iterrows():
+        ch = row["channel"]
+        total_spend = row["total_spend"]
+        contribution = row["contribution"]
+        params = param_map.get(ch, {})
+        
+        L = params.get("L_mean", 0.3)
+        k = params.get("k_mean", 2.0)
+        avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
+        
+        if total_spend <= 0 or contribution <= 0:
+            scale = 0
+        else:
+            sat_current = hill_saturation(avg_spend, L, k)
+            scale = contribution / (n_obs * sat_current + 1e-9)
+        
+        model_data.append({
+            "channel": ch,
+            "scale": scale,
+            "L": L,
+            "k": k,
+            "current_spend": total_spend,
+            "avg_spend": avg_spend
+        })
+    
+    # Objective function
+    def objective(avg_spends):
+        total_contrib = 0
+        for i, avg_x in enumerate(avg_spends):
+            m = model_data[i]
+            if m["scale"] > 0:
+                sat = hill_saturation(avg_x, m["L"], m["k"])
+                total_contrib += m["scale"] * n_obs * sat
+        return -total_contrib
+    
+    x0 = [m["avg_spend"] for m in model_data]
+    avg_budget = sum(x0)
+    
+    if avg_budget <= 0:
+        return {"allocation": [], "metrics": {"territory": territory, "success": False}}
+    
+    A_eq = np.ones((1, len(x0)))
+    linear_constraint = LinearConstraint(A_eq, [avg_budget], [avg_budget])
+    
+    bounds_list = []
+    for m in model_data:
+        current_avg = m["avg_spend"]
+        if current_avg > 0:
+            lb = current_avg * budget_bounds_pct[0]
+            ub = current_avg * budget_bounds_pct[1]
+        else:
+            lb, ub = 0, 0
+        bounds_list.append((lb, ub))
+    
+    result = minimize(objective, x0, method="SLSQP", constraints=[linear_constraint], bounds=bounds_list)
+    
+    # Format results
+    allocation = []
+    current_total_contrib = 0
+    optimal_total_contrib = 0
+    
+    for i, m in enumerate(model_data):
+        opt_avg = result.x[i] if result.success else m["avg_spend"]
+        opt_total = opt_avg * n_obs
+        change_pct = ((opt_total - m["current_spend"]) / m["current_spend"] * 100) if m["current_spend"] > 0 else 0.0
+        
+        if m["scale"] > 0:
+            curr_c = m["scale"] * n_obs * hill_saturation(m["avg_spend"], m["L"], m["k"])
+            opt_c = m["scale"] * n_obs * hill_saturation(opt_avg, m["L"], m["k"])
+        else:
+            curr_c, opt_c = 0, 0
+        
+        current_total_contrib += curr_c
+        optimal_total_contrib += opt_c
+        
+        allocation.append({
+            "territory": territory,
+            "channel": m["channel"],
+            "current_spend": float(m["current_spend"]),
+            "optimal_spend": float(opt_total),
+            "change_pct": float(change_pct),
+        })
+    
+    lift_pct = ((optimal_total_contrib - current_total_contrib) / current_total_contrib * 100) if current_total_contrib > 0 else 0.0
+    
+    return {
+        "allocation": allocation,
+        "metrics": {
+            "territory": territory,
+            "success": bool(result.success),
+            "current_contribution": float(current_total_contrib),
+            "projected_contribution": float(optimal_total_contrib),
+            "lift_pct": float(lift_pct),
+        }
+    }
