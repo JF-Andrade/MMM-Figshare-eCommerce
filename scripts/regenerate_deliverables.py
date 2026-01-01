@@ -144,8 +144,9 @@ def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
     df = load_data(data_path)
     regions = get_valid_regions(df, MIN_WEEKS_PER_REGION)
     
-    # Filter to valid regions
-    df = df[df["territory"].isin(regions)].copy()
+    # Filter to valid regions (use TERRITORY_NAME, same as get_valid_regions)
+    region_col = "TERRITORY_NAME"
+    df = df[df[region_col].isin(regions)].copy()
     
     # Create indices
     indices = create_hierarchy_indices(df, regions)
@@ -154,8 +155,8 @@ def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
     spend_cols = [c for c in SPEND_COLS if c in df.columns]
     
     # Split train/test
-    train_mask = df.groupby("territory").cumcount() < (
-        df.groupby("territory")["territory"].transform("count") - HOLDOUT_WEEKS
+    train_mask = df.groupby(region_col).cumcount() < (
+        df.groupby(region_col)[region_col].transform("count") - HOLDOUT_WEEKS
     )
     
     X_spend_train = df.loc[train_mask, spend_cols].values
