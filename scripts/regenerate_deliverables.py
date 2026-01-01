@@ -136,12 +136,13 @@ def load_idata_from_run(run_id: str) -> az.InferenceData:
 
 
 def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
-    """Load and prepare model data."""
+    """Load and prepare model data (all territories, no currency filter)."""
     from src.data_loader import load_data, get_valid_regions
     from src.preprocessing import create_hierarchy_indices
     from src.config import SPEND_COLS, MIN_WEEKS_PER_REGION, HOLDOUT_WEEKS
     
-    df = load_data(data_path)
+    # Load ALL data without currency filter (model uses all 18 territories)
+    df = load_data(data_path, currency=None)
     
     # Use same column name as get_valid_regions
     region_col = "TERRITORY_NAME"
