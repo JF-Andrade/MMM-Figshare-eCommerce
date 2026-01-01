@@ -38,7 +38,7 @@ from src.insights import (
 
 
 def get_latest_hierarchical_run() -> str:
-    """Get the latest hierarchical model run ID."""
+    """Get the latest hierarchical model run ID that has a trace file."""
     from mlflow import MlflowClient
     
     client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
@@ -51,26 +51,88 @@ def get_latest_hierarchical_run() -> str:
         experiment_ids=[experiment.experiment_id],
         filter_string="params.model_type LIKE '%hierarchical%'",
         order_by=["start_time DESC"],
-        max_results=1,
+        max_results=20,
     )
     
     if not runs:
         raise ValueError("No hierarchical model runs found")
     
-    return runs[0].info.run_id
+    # Find first run with trace file
+    for run in runs:
+        artifacts = client.list_artifacts(run.info.run_id)
+        has_trace = any("trace.nc" in a.path for a in artifacts)
+        if has_trace:
+            return run.info.run_id
+    
+    raise ValueError("No runs with trace file found. Re-run the pipeline to generate one.")
+
+
+def list_valid_runs():
+    """List all runs that have a trace file available."""
+    from mlflow import MlflowClient
+    
+    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+    experiment = client.get_experiment_by_name(MLFLOW_EXPERIMENT_NAME)
+    
+    if experiment is None:
+        print(f"Experiment '{MLFLOW_EXPERIMENT_NAME}' not found")
+        return
+    
+    runs = client.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string="params.model_type LIKE '%hierarchical%'",
+        order_by=["start_time DESC"],
+        max_results=20,
+    )
+    
+    print("\nRuns with trace file available:")
+    print("-" * 80)
+    
+    found = 0
+    for run in runs:
+        artifacts = client.list_artifacts(run.info.run_id)
+        has_trace = any("trace.nc" in a.path for a in artifacts)
+        if has_trace:
+            found += 1
+            r2 = run.data.metrics.get("r2_test", "N/A")
+            name = run.info.run_name or run.info.run_id[:8]
+            print(f"  {run.info.run_id}  R²={r2:.3f}  {name}")
+    
+    if found == 0:
+        print("  No runs with trace file found. Re-run the pipeline.")
+    else:
+        print(f"\nTotal: {found} runs available")
 
 
 def load_idata_from_run(run_id: str) -> az.InferenceData:
     """Download and load idata from MLflow artifacts."""
     from mlflow import MlflowClient
+    from mlflow.exceptions import MlflowException
     
     client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
     
-    # Download the trace file
-    local_path = client.download_artifacts(run_id, "mmm_hierarchical_trace.nc")
-    print(f"Loaded idata from: {local_path}")
+    # Check if trace exists
+    artifacts = client.list_artifacts(run_id)
+    trace_artifact = None
+    for a in artifacts:
+        if "trace.nc" in a.path:
+            trace_artifact = a.path
+            break
     
-    return az.from_netcdf(local_path)
+    if not trace_artifact:
+        raise ValueError(
+            f"Run {run_id} does not have a trace file.\n"
+            "Use --list to see runs with available traces."
+        )
+    
+    # Download the trace file
+    try:
+        local_path = client.download_artifacts(run_id, trace_artifact)
+        print(f"Loaded idata from: {local_path}")
+        return az.from_netcdf(local_path)
+    except MlflowException as e:
+        raise ValueError(f"Failed to download trace: {e}")
+
 
 
 def load_model_data(data_path: Path) -> tuple[pd.DataFrame, dict]:
@@ -264,9 +326,15 @@ def save_deliverables_to_mlflow(deliverables: dict, run_id: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Regenerate dashboard deliverables")
     parser.add_argument("--run-id", type=str, help="MLflow run ID to use")
-    parser.add_argument("--latest", action="store_true", help="Use latest hierarchical run")
+    parser.add_argument("--latest", action="store_true", help="Use latest hierarchical run with trace")
+    parser.add_argument("--list", action="store_true", help="List runs with trace files available")
     parser.add_argument("--data-path", type=str, default="data/processed/mmm_data.parquet")
     args = parser.parse_args()
+    
+    # List mode
+    if args.list:
+        list_valid_runs()
+        return
     
     # Determine run ID
     if args.run_id:
@@ -275,7 +343,7 @@ def main():
         run_id = get_latest_hierarchical_run()
         print(f"Using latest run: {run_id}")
     else:
-        print("Error: Specify --run-id <ID> or --latest")
+        print("Error: Specify --run-id <ID>, --latest, or --list")
         sys.exit(1)
     
     # Load idata
