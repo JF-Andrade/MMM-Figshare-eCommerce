@@ -93,7 +93,7 @@ def _transform_test_fold(
     df = df_test.copy()
     feature_cols = []
     
-    # Create OTHER_SPEND if needed (aggregate low-spend channels)
+    # Aggregate low-spend channels into OTHER_SPEND
     if "OTHER_SPEND" in channels and other_spend_sources:
         other_spend = pd.Series(0.0, index=df.index)
         for src_col in other_spend_sources:
@@ -220,7 +220,7 @@ def run_ridge_baseline(
             pipeline.fit(X_train_cv, y_train_cv)
             scores.append(pipeline.score(X_test_cv, y_test_cv))
             
-        # Return negative mean R2 (minimize negative R2 = maximize R2)
+        # Minimize negative R2 → maximize R2
         mean_score = np.mean(scores)
         return -mean_score
 

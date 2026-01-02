@@ -343,7 +343,7 @@ def validate_and_save_deliverables(
         ChannelROI,
     )
     
-    # Create metadata
+    # Pydantic metadata for validated output
     metadata = ModelMetadata(
         run_id=run_id,
         model_type="hierarchical",
@@ -606,7 +606,7 @@ def run_hierarchical(
         # In build logic, 'territory_idx' maps 0..N-1 to regions list order.
         for r_idx, region_name in enumerate(regions):
             try:
-                # Create mask for this region
+                # Isolate observations for this territory
                 mask = (m_data["territory_idx_train"] == r_idx)
                 if not np.any(mask):
                     continue

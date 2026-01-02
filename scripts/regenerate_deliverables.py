@@ -214,7 +214,7 @@ def regenerate_deliverables(
     # CRITICAL FIX: Model predicts y_log (log1p transformed revenue)
     # Contributions are in LOG SCALE - they represent log-revenue increments
     # To convert to linear $ scale: exp(contribution) - 1 gives approximate revenue lift
-    # But for ROI, we need to compare to actual spend
+    # ROI requires actual spend for comparison
     
     # Get total original revenue for scaling
     if "ALL_PURCHASES_ORIGINAL_PRICE" in df_train.columns:
