@@ -28,17 +28,18 @@ def main():
 
     # Quick overview
     st.subheader("Model Overview")
+    st.caption("Showing aggregated global metrics across all territories")
     
     col1, col2, col3, col4 = st.columns(4)
 
     lift = deliverables.get("revenue_lift")
     if lift:
-        col1.metric("Revenue Lift", f"{lift.get('lift_pct', 0):.1f}%")
+        col1.metric("Revenue Lift (Global)", f"{lift.get('lift_pct', 0):.1f}%")
 
     roi = deliverables.get("roi")
     if roi:
         best = max(roi, key=lambda x: x.get("roi", 0))
-        col2.metric("Best Channel", best["channel"], f"{best['roi']:.2f}x")
+        col2.metric("Best Channel (Global)", best["channel"], f"{best['roi']:.2f}x")
 
     regional = deliverables.get("regional")
     if regional:
@@ -50,7 +51,7 @@ def main():
         col4.metric("Channels", len(contributions))
 
     st.markdown("---")
-    st.caption("Use the sidebar to navigate between analysis pages.")
+    st.caption("Use the sidebar to navigate between analysis pages. Select 'Executive Summary' for territory-specific breakdowns.")
 
 
 if __name__ == "__main__":

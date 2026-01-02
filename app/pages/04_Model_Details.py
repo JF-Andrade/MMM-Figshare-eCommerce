@@ -62,6 +62,23 @@ def main():
 
     # Adstock parameters
     st.subheader("Adstock Decay Parameters")
+    
+    # Territory selector at top level
+    adstock_territory = deliverables.get("adstock_territory")
+    saturation_territory = deliverables.get("saturation_territory")
+    
+    if adstock_territory or saturation_territory:
+        import pandas as pd
+        if saturation_territory:
+            sat_terr_df = pd.DataFrame(saturation_territory)
+            territories = sorted(sat_terr_df["territory"].unique().tolist())
+        else:
+            adstock_terr_df = pd.DataFrame(adstock_territory)
+            territories = sorted(adstock_terr_df["territory"].unique().tolist())
+        
+        view_mode = st.radio("Parameter View", ["Global (Hierarchical Mean)", "By Territory"], horizontal=True, key="model_view")
+    else:
+        view_mode = "Global (Hierarchical Mean)"
 
     adstock = deliverables.get("adstock")
     if adstock:
@@ -71,12 +88,20 @@ def main():
             adstock_decay_chart(adstock)
 
         with col2:
-            st.markdown("**Parameter Values**")
-            import pandas as pd
-            adstock_df = pd.DataFrame(adstock)
-            display_cols = ["channel", "alpha_mean", "half_life_weeks"]
-            display_cols = [c for c in display_cols if c in adstock_df.columns]
-            st.dataframe(adstock_df[display_cols], use_container_width=True)
+            if view_mode == "By Territory" and adstock_territory:
+                selected_terr = st.selectbox("Territory", territories, key="adstock_terr")
+                st.markdown(f"**Adstock for {selected_terr}**")
+                import pandas as pd
+                adstock_terr_df = pd.DataFrame(adstock_territory)
+                terr_ads = adstock_terr_df[adstock_terr_df["territory"] == selected_terr][["channel", "alpha_mean"]]
+                st.dataframe(terr_ads, use_container_width=True)
+            else:
+                st.markdown("**Global Parameter Values**")
+                import pandas as pd
+                adstock_df = pd.DataFrame(adstock)
+                display_cols = ["channel", "alpha_mean", "half_life_weeks"]
+                display_cols = [c for c in display_cols if c in adstock_df.columns]
+                st.dataframe(adstock_df[display_cols], use_container_width=True)
 
             st.markdown("""
             **Interpretation:**
