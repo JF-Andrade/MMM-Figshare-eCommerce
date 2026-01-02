@@ -8,13 +8,13 @@ Major refactoring to ensure all calculations correctly account for territory-spe
 
 ### Critical Fixes
 
-| ID  | Issue                                   | Fix Applied                                            | File                         |
-| --- | --------------------------------------- | ------------------------------------------------------ | ---------------------------- |
-| T1  | ROI calculated in log scale             | Convert contributions from log to linear scale         | `regenerate_deliverables.py` |
-| T2  | Contributions used raw spend            | Use normalized spend from `hierarchical_train.parquet` | `regenerate_deliverables.py` |
-| T3  | Executive Summary lacked territory      | Added Global/By Territory selector                     | `01_Executive_Summary.py`    |
-| T4  | Home page showed global without label   | Added "(Global)" labels to KPIs                        | `Home.py`                    |
-| T5  | Model Details territory selector hidden | Made territory selector more prominent                 | `04_Model_Details.py`        |
+| Issue                                   | Fix Applied                                            | File                         |
+| --------------------------------------- | ------------------------------------------------------ | ---------------------------- |
+| ROI calculated in log scale             | Convert contributions from log to linear scale         | `regenerate_deliverables.py` |
+| Contributions used raw spend            | Use normalized spend from `hierarchical_train.parquet` | `regenerate_deliverables.py` |
+| Executive Summary lacked territory      | Added Global/By Territory selector                     | `01_Executive_Summary.py`    |
+| Home page showed global without label   | Added "(Global)" labels to KPIs                        | `Home.py`                    |
+| Model Details territory selector hidden | Made territory selector more prominent                 | `04_Model_Details.py`        |
 
 ### New Deliverables
 
@@ -41,31 +41,31 @@ Major refactoring to ensure all calculations correctly account for territory-spe
 
 ## [2025-12-31] Ridge Baseline Audit & Fixes
 
-Technical audit of the Ridge Regression baseline model. All identified issues corrected.
+Comprehensive audit of the Ridge Regression baseline to address scaling inconsistencies in ROI calculations, data leakage in cross-validation (mitigated by a 2-period gap to isolate adstock carryover effects between training and test sets), and the physical plausibility of channel coefficients.
 
 ### Critical Fixes
 
-| ID  | Issue                              | Fix Applied                                              | File              |
-| --- | ---------------------------------- | -------------------------------------------------------- | ----------------- |
-| B1  | ROI formula ignored StandardScaler | Reverts scaling: `beta_original = beta_scaled / sigma_X` | `evaluation.py`   |
-| B2  | No gap in TimeSeriesSplit          | Added `gap=2` to account for adstock carryover           | `mmm_baseline.py` |
+| Issue                              | Fix Applied                                              | File              |
+| ---------------------------------- | -------------------------------------------------------- | ----------------- |
+| ROI formula ignored StandardScaler | Reverts scaling: `beta_original = beta_scaled / sigma_X` | `evaluation.py`   |
+| No gap in TimeSeriesSplit          | Added `gap=2` to account for adstock carryover           | `mmm_baseline.py` |
 
 > **Note on Data Leakage**: Per-fold transformation was initially implemented but caused instability with small datasets. Reverted to hybrid approach: global transformation for channel consistency, proper CV splits for scoring. Minor leakage in saturation normalization (uses global max) is acceptable trade-off for stability.
 
 ### Medium Fixes
 
-| ID  | Issue                               | Fix Applied                                       | File          |
-| --- | ----------------------------------- | ------------------------------------------------- | ------------- |
-| B4  | Negative coefficients not validated | Added warning for economically implausible values | `insights.py` |
-| B5  | Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                 | `config.py`   |
+| Issue                               | Fix Applied                                       | File          |
+| ----------------------------------- | ------------------------------------------------- | ------------- |
+| Negative coefficients not validated | Added warning for economically implausible values | `insights.py` |
+| Missing CV gap config               | Added `CV_GAP_WEEKS = 2` constant                 | `config.py`   |
 
 ### Low Priority Fixes
 
-| ID  | Issue                      | Fix Applied                               | File                |
-| --- | -------------------------- | ----------------------------------------- | ------------------- |
-| B7  | No ROI tests               | Added 4 unit tests for ROI computation    | `tests/test_roi.py` |
-| B8  | Potential division by zero | Added safety check for `total_spend == 0` | `preprocessing.py`  |
-| B9  | Misleading variable name   | Renamed `y_scaler` → `y_mean`             | `preprocessing.py`  |
+| Issue                      | Fix Applied                               | File                |
+| -------------------------- | ----------------------------------------- | ------------------- |
+| No ROI tests               | Added 4 unit tests for ROI computation    | `tests/test_roi.py` |
+| Potential division by zero | Added safety check for `total_spend == 0` | `preprocessing.py`  |
+| Misleading variable name   | Renamed `y_scaler` → `y_mean`             | `preprocessing.py`  |
 
 ### New Functions
 

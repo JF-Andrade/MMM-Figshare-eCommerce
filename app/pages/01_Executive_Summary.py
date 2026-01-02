@@ -119,9 +119,14 @@ def main():
         )
 
     if lift and lift.get("lift_pct", 0) > 0:
+        lift_pct = lift.get("lift_pct", 0)
+        lift_abs = lift.get("lift_absolute", 0)
+        # Show more precision if lift is very small but positive
+        pct_fmt = ".2f" if lift_pct < 0.1 else ".1f"
+        
         insight_box(
-            f"Optimal budget allocation could increase revenue by **{lift['lift_pct']:.1f}%** "
-            f"({lift['lift_absolute']:,.0f} additional revenue).",
+            f"Optimal budget allocation could increase revenue by **{lift_pct:{pct_fmt}}%** "
+            f"({lift_abs:,.0f} additional revenue).",
             insight_type="info",
         )
 
