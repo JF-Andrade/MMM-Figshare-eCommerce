@@ -380,14 +380,17 @@ def regenerate_deliverables(
                 }
             
             global_channel_alloc[ch]["current_spend"] += alloc["current_spend"]
-            global_channel_alloc[ch]["optimized_spend"] += alloc["optimized_spend"]
-            # Metrics might be missing if opt failed, assume proportional if so, but terr_opt usually has them
+            # Fix: Key is 'optimal_spend' in territory function output
+            global_channel_alloc[ch]["optimized_spend"] += alloc.get("optimal_spend", 0)
+            
+            # Accumulate global totals from allocation since metrics dict doesn't have spend totals
+            if terr_opt["metrics"].get("success"):
+                global_current_spend += alloc["current_spend"]
+                global_opt_spend += alloc.get("optimal_spend", 0)
             
         metrics = terr_opt["metrics"]
         if metrics.get("success"):
             lift_by_territory.append(metrics)
-            global_current_spend += metrics.get("current_spend", 0)
-            global_opt_spend += metrics.get("optimized_spend", 0)
             global_current_contrib += metrics.get("current_contribution", 0)
             global_opt_contrib += metrics.get("projected_contribution", 0)
 

@@ -386,4 +386,23 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Dataset provided by [Figshare](https://figshare.com/articles/dataset/Multi-Region_Marketing_Mix_Modeling_MMM_Dataset_for_Several_eCommerce_Brands/25314841)
 - PyMC-Marketing team for the excellent MMM framework
-- Google Colab for free GPU access
+
+### Local Development (Conda + MKL)
+
+```powershell
+# Clone repository
+git clone https://github.com/JF-Andrade/MMM-Figshare-eCommerce.git
+cd MMM-Figshare-eCommerce
+
+# Create Conda environment with MKL (requires mamba)
+mamba env create -f environment.yml
+
+# Activate environment with BLAS optimization
+. .\activate_mmm.ps1
+```
+
+> **Note**: The `activate_mmm.ps1` script activates the Conda environment and configures the `PYTENSOR_FLAGS` variable to link Intel MKL. This is required because PyTensor on Windows does not automatically detect BLAS libraries, and without this configuration, matrix operations performance is suboptimal.
+
+---
+
+## Usage
