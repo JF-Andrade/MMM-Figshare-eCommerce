@@ -2,6 +2,43 @@
 
 All notable changes to the hierarchical MMM model.
 
+## [2026-01-02] Territory Hierarchy Architecture & Dashboard Context
+
+Major refactoring to ensure all calculations correctly account for territory-specific parameters.
+
+### Critical Fixes
+
+| ID  | Issue                                   | Fix Applied                                            | File                         |
+| --- | --------------------------------------- | ------------------------------------------------------ | ---------------------------- |
+| T1  | ROI calculated in log scale             | Convert contributions from log to linear scale         | `regenerate_deliverables.py` |
+| T2  | Contributions used raw spend            | Use normalized spend from `hierarchical_train.parquet` | `regenerate_deliverables.py` |
+| T3  | Executive Summary lacked territory      | Added Global/By Territory selector                     | `01_Executive_Summary.py`    |
+| T4  | Home page showed global without label   | Added "(Global)" labels to KPIs                        | `Home.py`                    |
+| T5  | Model Details territory selector hidden | Made territory selector more prominent                 | `04_Model_Details.py`        |
+
+### New Deliverables
+
+- `adstock_territory.json` - Alpha by territory × channel
+- `saturation_territory.json` - L, k by territory × channel
+- `contributions_territory.json` - Contributions by territory
+- `optimization_territory.json` - Budget optimization by territory
+- `lift_by_territory.json` - Revenue lift by territory
+
+### New Script
+
+- `scripts/regenerate_deliverables.py` - Regenerates dashboard deliverables from saved idata
+
+### Model Performance (Latest Run)
+
+| Metric      | Baseline | Hierarchical |
+| ----------- | -------- | ------------ |
+| R² Test     | 0.486    | 0.856        |
+| MAPE Test   | 15.7%    | 36.4%        |
+| Territories | 1        | 18           |
+| Training    | ~30s     | ~3.8 hours   |
+
+---
+
 ## [2025-12-31] Ridge Baseline Audit & Fixes
 
 Technical audit of the Ridge Regression baseline model. All identified issues corrected.

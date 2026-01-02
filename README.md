@@ -59,9 +59,13 @@ This project applies Bayesian Media Mix Modeling to solve these challenges, prov
 | Model                     | R² Train | R² Test | MAPE Test |
 | ------------------------- | -------- | ------- | --------- |
 | **Ridge Baseline**        | 0.75     | 0.49    | 15.7%     |
-| **Hierarchical Bayesian** | 0.85\*   | 0.42\*  | 21.3%\*   |
+| **Hierarchical Bayesian** | 0.67     | 0.86    | 36.4%     |
 
-> \* Preliminary results from the custom nested hierarchical model with 18 territories.
+> **Latest Run (2026-01-02):** Custom hierarchical model with 18 territories across 5 currencies.
+>
+> - Training time: ~3.8 hours (NUTS sampler, 4 chains × 2000 draws)
+> - Convergence: Max R-hat = 1.746, 17 divergences (requires tuning)
+> - Budget optimization computed for 17 territories
 
 > [!NOTE]
 > The Ridge baseline may produce negative coefficients for correlated channels (e.g., META_FACEBOOK) due to multicollinearity. This is a known limitation of linear regression and is resolved by the Bayesian model's positive priors.
