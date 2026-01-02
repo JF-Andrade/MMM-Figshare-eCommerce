@@ -23,7 +23,7 @@ def shared_sidebar() -> dict | None:
     Returns:
         Loaded deliverables dict, or None if no runs available.
     """
-    st.sidebar.title("📊 MMM Dashboard")
+    st.sidebar.title("MMM Dashboard")
     
     try:
         client = get_mlflow_client()
@@ -40,7 +40,7 @@ def shared_sidebar() -> dict | None:
         } or {r['run_name']: r['run_id'] for r in runs}
         
         selected_label = st.sidebar.selectbox(
-            "🔘 Select Model Run",
+            "Select Model Run",
             options=list(run_options.keys()),
         )
         
@@ -66,7 +66,7 @@ def shared_sidebar() -> dict | None:
             st.metric("MAPE", f"{mape:.1f}%" if mape else "N/A")
         
         # Advanced Details (collapsible)
-        with st.sidebar.expander("📋 Run Details"):
+        with st.sidebar.expander("Run Details"):
             st.text(f"ID: {run_id[:8]}...")
             st.text(f"Type: {run_info.get('model_type', 'unknown')}")
             st.text(f"Status: {run_info.get('status', 'FINISHED')}")

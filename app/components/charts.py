@@ -414,3 +414,80 @@ def response_curves_chart(contributions: list[dict], saturation: list[dict]) -> 
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+
+def actual_vs_predicted_chart(predictions: list[dict], metrics: dict = None) -> None:
+    """
+    Render Actual vs Predicted time series chart.
+
+    Args:
+        predictions: List of prediction records with date, actual, predicted, split.
+        metrics: Optional dictionary with R2/MAPE metrics to display in subtitle.
+    """
+    import plotly.graph_objects as go
+    import pandas as pd
+    
+    if not predictions:
+        st.info("No predictions data available.")
+        return
+
+    df = pd.DataFrame(predictions)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    
+    train_df = df[df["split"] == "train"]
+    test_df = df[df["split"] == "test"]
+    
+    fig = go.Figure()
+
+    # TRAIN - Actual
+    fig.add_trace(go.Scatter(
+        x=train_df["date"], y=train_df["actual"],
+        name="Actual (Train)",
+        line=dict(color="#1f77b4", width=2),
+        opacity=0.7
+    ))
+    
+    # TRAIN - Predicted
+    fig.add_trace(go.Scatter(
+        x=train_df["date"], y=train_df["predicted"],
+        name="Model (Train)",
+        line=dict(color="#1f77b4", width=2, dash="dot"),
+        opacity=0.7
+    ))
+    
+    # TEST - Actual
+    fig.add_trace(go.Scatter(
+        x=test_df["date"], y=test_df["actual"],
+        name="Actual (Test)",
+        line=dict(color="#ff7f0e", width=2),
+    ))
+    
+    # TEST - Predicted
+    fig.add_trace(go.Scatter(
+        x=test_df["date"], y=test_df["predicted"],
+        name="Model (Test)",
+        line=dict(color="#ff7f0e", width=2, dash="dot"),
+    ))
+
+    # Add split line
+    if not test_df.empty:
+        split_date = test_df["date"].min()
+        fig.add_vline(x=split_date, line_width=1, line_dash="dash", line_color="gray", annotation_text="Train/Test Split")
+
+    title = "Actual vs Model Prediction"
+    if metrics:
+        r2 = metrics.get('r2_test', 0)
+        mape = metrics.get('mape_test', 0)
+        title += f" (Test R²: {r2:.2f}, MAPE: {mape:.1f}%)"
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title="Sales / Target",
+        height=500,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)

@@ -275,11 +275,16 @@ def prepare_model_data(
     print(f"{'='*60}")
     
     # Data scale debug
-    print(f"\n=== DATA SCALE DEBUG ===")
-    print(f"y_log: mean={model_data['y_train'].mean():.3f}, std={model_data['y_train'].std():.3f}")
-    print(f"X_spend: max={model_data['X_spend_train'].max():.3f}")
     print(f"X_features: std (avg)={model_data['X_features_train'].std(axis=0).mean():.3f}")
     print(f"========================\n")
+    
+    # Add metadata for predictions deliverable
+    model_data.update({
+        "dates_train": df_train[DATE_COL].dt.strftime("%Y-%m-%d").values,
+        "dates_test": df_test[DATE_COL].dt.strftime("%Y-%m-%d").values,
+        "territories_train": df_train[GEO_COL].values,
+        "territories_test": df_test[GEO_COL].values,
+    })
     
     # Save datasets for inspection
     inspect_dir = PROJECT_ROOT / "data" / "inspection"
@@ -556,6 +561,25 @@ def run_hierarchical(
         print(f"Train R²: {combined_metrics['r2_train']:.3f}, Test R²: {combined_metrics['r2_test']:.3f}")
         print(f"Train MAPE: {combined_metrics['mape_train']:.1f}%, Test MAPE: {combined_metrics['mape_test']:.1f}%")
 
+        # Save PREDICTIONS for Actual vs Predicted chart
+        import pandas as pd
+        predictions_df = pd.DataFrame({
+            "date": list(m_data["dates_train"]) + list(m_data["dates_test"]),
+            "territory": list(m_data["territories_train"]) + list(m_data["territories_test"]),
+            # Values are in log scale originally
+            "actual_log": list(m_data["y_train"]) + list(m_data["y_test"]),
+            "predicted_log": list(y_pred_train_log) + list(y_pred_log),
+            "actual": list(m_data["y_train_original"]) + list(m_data["y_test_original"]),
+            # Convert predicted log back to linear: exp(log) - 1
+            "predicted": list(np.expm1(y_pred_train_log)) + list(np.expm1(y_pred_log)),
+            "split": ["train"]*len(m_data["y_train"]) + ["test"]*len(m_data["y_test"]),
+        })        
+        mlflow.log_dict(
+            {"predictions": predictions_df.to_dict(orient="records")}, 
+            "deliverables/predictions.json"
+        )
+        print("Saved predictions.json")
+        
         # 6. Contributions and ROI
         print("\nComputing contributions...")
         contrib_df = compute_channel_contributions(

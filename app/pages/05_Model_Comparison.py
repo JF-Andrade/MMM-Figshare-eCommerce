@@ -90,6 +90,42 @@ def main():
 
     st.markdown("---")
 
+    # Actual vs Predicted (Hierarchical model)
+    st.subheader("Actual vs Predicted (Hierarchical)")
+    
+    # Load deliverables for hierarchical run
+    from app.mlflow_loader import load_deliverable
+    try:
+        client = get_mlflow_client()
+        predictions = load_deliverable(hier_run_id, "predictions", client)
+        
+        if predictions:
+            predictions = predictions if isinstance(predictions, list) else predictions.get("predictions", [])
+            
+            # Territory filter
+            all_territories = sorted(list(set(p["territory"] for p in predictions)))
+            selected_terr = st.selectbox(
+                "Filter by Territory", 
+                ["All"] + all_territories,
+                key="pred_terr_filter"
+            )
+            
+            if selected_terr != "All":
+                predictions = [p for p in predictions if p["territory"] == selected_terr]
+                st.caption(f"Showing data for: **{selected_terr}**")
+            else:
+                st.caption("Showing aggregate data (All Territories)")
+            
+            from app.components.charts import actual_vs_predicted_chart
+            actual_vs_predicted_chart(predictions, metrics=hierarchical_metrics)
+        else:
+            st.info("No predictions data available for this run. Re-run pipeline to generate.")
+            
+    except Exception as e:
+        st.error(f"Could not load predictions: {e}")
+
+    st.markdown("---")
+
     # Comparison table
     st.subheader("Performance Comparison")
 

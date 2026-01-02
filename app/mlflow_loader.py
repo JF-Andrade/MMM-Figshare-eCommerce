@@ -166,6 +166,7 @@ def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> di
         "regional",
         "revenue_lift",
         "lift_by_territory",
+        "predictions",
     ]
 
     deliverables = {}
