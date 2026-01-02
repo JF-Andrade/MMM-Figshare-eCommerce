@@ -36,7 +36,7 @@ def shared_sidebar() -> dict | None:
         
         # Run selector
         run_options = {
-            f"{r['run_name']} (R²: {r['r2_test']:.3f})": r['run_id'] for r in runs if r['r2_test']
+            f"{r['run_name']} (R2: {r['r2_test']:.3f})": r['run_id'] for r in runs if r['r2_test']
         } or {r['run_name']: r['run_id'] for r in runs}
         
         selected_label = st.sidebar.selectbox(

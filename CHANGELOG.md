@@ -73,36 +73,38 @@ Comprehensive audit of the Ridge Regression baseline to address scaling inconsis
 
 ### Files Modified
 
-- `src/evaluation.py` — B1 (ROI formula)
-- `scripts/mmm_baseline.py` — B2, B3 (leakage, CV gap)
-- `src/insights.py` — B4 (coefficient validation)
-- `src/config.py` — B5, B6 (bounds, CV config)
-- `src/preprocessing.py` — B8, B9 (safety, naming)
-- `tests/test_roi.py` — B7 (new file)
+| File                      | Changes                                                                    |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `src/evaluation.py`       | Corrected ROI formula to account for `StandardScaler` (reverting scaling)  |
+| `scripts/mmm_baseline.py` | Added CV gap for adstock and implemented fold-specific test transformation |
+| `src/insights.py`         | Added plausibility warnings for negative channel coefficients              |
+| `src/config.py`           | Defined `CV_GAP_WEEKS` constant for time-series splits                     |
+| `src/preprocessing.py`    | Fixed potential division by zero and renamed `y_scaler` to `y_mean`        |
+| `tests/test_roi.py`       | Initialized unit tests for ROI computation logic                           |
 
 ---
 
 ## [2025-12-31] Technical Audit & Model Corrections
 
-Comprehensive audit conducted by a senior review process. All issues identified have been corrected.
+Comprehensive audit conducted through a thorough review. All issues identified have been corrected.
 
-### Critical Fixes (C1-C3)
+### Critical Fixes
 
-| ID  | Issue                               | Fix Applied                                          |
-| --- | ----------------------------------- | ---------------------------------------------------- |
-| C1  | Student-T ν prior too high          | `PRIOR_NU_BETA`: 0.1 → 0.5 (mean ν ≈ 4, more robust) |
-| C2  | Data leakage in spend normalization | Normalization moved to AFTER train/test split        |
-| C3  | NaN in holdout y_obs_data           | Changed to zeros for JAX/NumPyro compatibility       |
+| Issue                                 | Fix Applied                                            |
+| ------------------------------------- | ------------------------------------------------------ |
+| Student-T ν prior (ν=0.1) was too low | `PRIOR_NU_BETA`: 0.1 → 0.5 (calibrated for mean ν ≈ 4) |
+| Data leakage in spend normalization   | Normalization moved to AFTER train/test split          |
+| NaN in holdout y_obs_data             | Changed to zeros for JAX/NumPyro compatibility         |
 
 ### Medium Fixes (M1-M5)
 
-| ID  | Issue                                                | Fix Applied                                   |
-| --- | ---------------------------------------------------- | --------------------------------------------- |
-| M1  | `sigma_alpha` too restrictive                        | `PRIOR_SIGMA_ADSTOCK_TERRITORY`: 0.1 → 0.2    |
-| M2  | `L_channel` used folded Normal                       | Changed to proper `pm.HalfNormal`             |
-| M3  | `L_territory` used `abs()` (discontinuous gradients) | Changed to `pt.softplus()`                    |
-| M4  | Split used `.loc` (fragile indexing)                 | Changed to `.iloc` for robustness             |
-| M5  | `sigma_L` too restrictive                            | `PRIOR_SIGMA_SATURATION_TERRITORY`: 0.1 → 0.2 |
+| Issue                                                | Fix Applied                                   |
+| ---------------------------------------------------- | --------------------------------------------- |
+| `sigma_alpha` too restrictive                        | `PRIOR_SIGMA_ADSTOCK_TERRITORY`: 0.1 → 0.2    |
+| `L_channel` used folded Normal                       | Changed to proper `pm.HalfNormal`             |
+| `L_territory` used `abs()` (discontinuous gradients) | Changed to `pt.softplus()`                    |
+| Split used `.loc` (fragile indexing)                 | Changed to `.iloc` for robustness             |
+| `sigma_L` too restrictive                            | `PRIOR_SIGMA_SATURATION_TERRITORY`: 0.1 → 0.2 |
 
 ### Prior Calibration Summary
 
@@ -118,7 +120,7 @@ Comprehensive audit conducted by a senior review process. All issues identified 
 
 - **L_channel** — Changed from folded Normal (`abs(Normal)`) to proper `HalfNormal`
 - **L_territory** — Uses `softplus()` instead of `abs()` for smoother gradients
-- **Spend normalization** — Now fitted on train only, applied to test with same max
+- **Spend normalization** — Fitted on training data only to prevent data leakage (lookahead bias), ensuring the model does not "see" future spend peaks during the training phase
 
 ### Diagnostics & Metrics
 

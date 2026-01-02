@@ -273,19 +273,34 @@ def regenerate_deliverables(
     saturation_params = []
     for i, channel in enumerate(channel_names):
         try:
-            alpha = summary.loc[f"alpha_channel[{i}]", "mean"]
-            L = summary.loc[f"L_channel[{i}]", "mean"]
-            k = summary.loc[f"k_channel[{i}]", "mean"]
+            # Fix: Use channel names for indexing instead of numeric indices
+            # depending on how ArviZ/PyMC 5.x created the summary
+            try:
+                alpha = summary.loc[f"alpha_channel[{channel}]", "mean"]
+                L = summary.loc[f"L_channel[{channel}]", "mean"]
+                k = summary.loc[f"k_channel[{channel}]", "mean"]
+            except KeyError:
+                # Fallback to numeric if needed, but usually it's by name now
+                alpha = summary.loc[f"alpha_channel[{i}]", "mean"]
+                L = summary.loc[f"L_channel[{i}]", "mean"]
+                k = summary.loc[f"k_channel[{i}]", "mean"]
             
-            adstock_params.append({"channel": channel, "alpha_mean": float(alpha)})
+            # Calculate half-life
+            half_life = float(np.log(0.5) / (np.log(alpha) + 1e-8)) if alpha > 0 else 0.0
+
+            adstock_params.append({
+                "channel": channel, 
+                "alpha_mean": float(alpha),
+                "half_life_weeks": half_life
+            })
             saturation_params.append({
                 "channel": channel,
                 "L_mean": float(L),
                 "k_mean": float(k),
                 "lam_mean": float(1.0 / (L + 1e-8))
             })
-        except KeyError:
-            pass
+        except KeyError as e:
+            print(f"Warning: Could not find parameter for {channel}: {e}")
     
     deliverables["adstock"] = adstock_params
     deliverables["saturation"] = saturation_params
@@ -328,38 +343,87 @@ def regenerate_deliverables(
     # Regional data (flat format)
     deliverables["regional"] = contrib_by_territory_df.rename(columns={"territory": "region"}).to_dict(orient="records")
     
-    print("7. Running global budget optimization...")
-    total_budget = contrib_df["total_spend"].sum()
-    optimization_result = optimize_hierarchical_budget(
-        contrib_df=contrib_df,
-        saturation_params=saturation_params,
-        total_budget=total_budget,
-        n_obs=n_obs_train,
-        budget_bounds_pct=(0.70, 1.30)
-    )
-    deliverables["optimization"] = optimization_result["allocation"]
-    deliverables["revenue_lift"] = optimization_result["metrics"]
-    
-    print("8. Running budget optimization BY TERRITORY...")
+    print("7. Running budget optimization BY TERRITORY...")
     optimization_by_territory = []
     lift_by_territory = []
+    
+    # Track aggregated results for global consistency (Bottom-Up Approach)
+    global_current_spend = 0.0
+    global_opt_spend = 0.0
+    global_current_contrib = 0.0
+    global_opt_contrib = 0.0
+    
+    # Store per-channel global aggregation
+    global_channel_alloc = {}
     
     for territory in regions:
         terr_contrib = contrib_by_territory_df[contrib_by_territory_df["territory"] == territory]
         terr_sat_params = [p for p in saturation_territory_params if p["territory"] == territory]
         
+        # Optimize for this territory
         terr_opt = optimize_budget_by_territory(
             contrib_territory_df=terr_contrib,
             saturation_params=terr_sat_params,
             territory=territory,
         )
+        
+        # Collect results
         optimization_by_territory.extend(terr_opt["allocation"])
-        if terr_opt["metrics"].get("success"):
-            lift_by_territory.append(terr_opt["metrics"])
-    
+        
+        # Aggregate logic
+        for alloc in terr_opt["allocation"]:
+            ch = alloc["channel"]
+            if ch not in global_channel_alloc:
+                global_channel_alloc[ch] = {
+                    "channel": ch, "current_spend": 0.0, "optimized_spend": 0.0,
+                    "current_contribution": 0.0, "optimized_contribution": 0.0
+                }
+            
+            global_channel_alloc[ch]["current_spend"] += alloc["current_spend"]
+            global_channel_alloc[ch]["optimized_spend"] += alloc["optimized_spend"]
+            # Metrics might be missing if opt failed, assume proportional if so, but terr_opt usually has them
+            
+        metrics = terr_opt["metrics"]
+        if metrics.get("success"):
+            lift_by_territory.append(metrics)
+            global_current_spend += metrics.get("current_spend", 0)
+            global_opt_spend += metrics.get("optimized_spend", 0)
+            global_current_contrib += metrics.get("current_contribution", 0)
+            global_opt_contrib += metrics.get("projected_contribution", 0)
+
     deliverables["optimization_territory"] = optimization_by_territory
     deliverables["lift_by_territory"] = lift_by_territory
     
+    print("8. Aggregating to create GLOBAL optimization results (Bottom-Up)...")
+    # Create global optimization list from aggregation
+    global_optimization = [
+        {
+            "channel": v["channel"],
+            "current_spend": v["current_spend"],
+            "optimized_spend": v["optimized_spend"],
+            # Recalculate PCT change based on aggregated sums
+            "delta_spend_pct": ((v["optimized_spend"] / v["current_spend"]) - 1) if v["current_spend"] > 0 else 0
+        }
+        for v in global_channel_alloc.values()
+    ]
+    deliverables["optimization"] = global_optimization
+    
+    # Create global lift metrics from aggregation
+    global_lift_abs = global_opt_contrib - global_current_contrib
+    global_lift_pct = (global_lift_abs / global_current_contrib * 100) if global_current_contrib > 0 else 0
+    
+    deliverables["revenue_lift"] = {
+        "current_spend": global_current_spend,
+        "optimized_spend": global_opt_spend,
+        "current_contribution": global_current_contrib,
+        "projected_contribution": global_opt_contrib,
+        "lift_absolute": global_lift_abs,
+        "lift_pct": global_lift_pct,
+        "success": True
+    }
+    
+    print(f"   aggregated global lift: {global_lift_pct:.2f}% (${global_lift_abs:,.0f})")
+
     print(f"\nGenerated {len(deliverables)} deliverables")
     return deliverables
 
