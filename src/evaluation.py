@@ -269,7 +269,7 @@ def compute_ridge_roi(
     Compute ROI from Ridge coefficients with proper scaling reversal.
 
     The Ridge model operates on StandardScaler-transformed features.
-    To interpret coefficients in original units, we must reverse the scaling.
+    To interpret coefficients in original units, scaling must be reversed.
     
     ROI Interpretation:
     - coefficient_scaled: Raw coefficient from Ridge (after StandardScaler)
