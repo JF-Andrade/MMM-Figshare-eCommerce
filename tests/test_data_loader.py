@@ -11,7 +11,7 @@ def test_load_data_returns_dataframe(tmp_path: Path) -> None:
     """Test that load_data returns a DataFrame."""
     from src.data_loader import load_data
 
-    # Create a minimal test parquet file
+    # Minimal parquet file for testing
     df = pd.DataFrame({
         "DATE_DAY": ["2023-01-01", "2023-01-02"],
         "CURRENCY_CODE": ["GBP", "GBP"],

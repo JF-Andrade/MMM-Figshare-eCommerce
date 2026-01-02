@@ -126,8 +126,8 @@ def test_engineer_features_orchestration() -> None:
         "GOOGLE_PAID_SEARCH_SPEND": [1000],
     })
     
-    # Should work with defaults if we mock config or pass spend_cols
-    # Here we just check output structure
+    # Works with defaults if config is mocked or spend_cols is passed
+    # Checking output structure only
     result = engineer_features(df)
     
     assert "DAY_OF_WEEK" in result.columns

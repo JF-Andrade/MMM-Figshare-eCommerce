@@ -12,7 +12,7 @@ def test_compute_ridge_roi_reverses_scaler():
     """Test that ROI correctly reverses StandardScaler transformation."""
     from src.evaluation import compute_ridge_roi
     
-    # Create synthetic data
+    # Synthetic data with known relationships
     np.random.seed(42)
     X = pd.DataFrame({
         "CHANNEL_A_sat": np.random.uniform(0, 1, 100),
@@ -67,7 +67,7 @@ def test_roi_coefficient_original_unscales_correctly():
     from src.evaluation import compute_ridge_roi
     
     np.random.seed(42)
-    # Create data where we know the true coefficient
+    # Data with known true coefficient for validation
     X = pd.DataFrame({
         "CHANNEL_A_sat": np.array([0.0, 0.5, 1.0] * 33 + [0.5]),
     })
