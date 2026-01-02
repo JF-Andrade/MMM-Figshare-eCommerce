@@ -564,20 +564,44 @@ def run_hierarchical(
             m_data["territory_idx_train"],
             m_data["channel_names"]
         )
+        
+        # FIX: Convert contributions from log scale to linear $ scale
+        # Model predicts y_log, so contributions are in log units
+        total_revenue = m_data["df_train"][TARGET_COL].sum()
+        mean_log_revenue = m_data["df_train"]["y_log"].mean()
+        n_obs_train = len(m_data["df_train"])
+        
+        contrib_df["contribution_log"] = contrib_df["contribution"]
+        contrib_df["contribution"] = contrib_df["contribution_log"] * (total_revenue / (mean_log_revenue * n_obs_train + 1e-8))
+        
+        # Override total_spend with raw spend (not normalized)
+        spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
+        for i, raw_col in enumerate(spend_cols_raw):
+            if raw_col in m_data["df_train"].columns:
+                contrib_df.loc[i, "total_spend"] = m_data["df_train"][raw_col].sum()
+        
+        # Recalculate ROI with correct scale
+        contrib_df["roi"] = contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
+        
         # Add contribution percentage
         contrib_df["contribution_pct"] = contrib_df["contribution"] / contrib_df["contribution"].sum()
+        
+        print(f"   Total revenue: {total_revenue:,.0f}")
+        print(f"   Contribution range: {contrib_df['contribution'].min():,.0f} to {contrib_df['contribution'].max():,.0f}")
         
         # Log contributions
         mlflow.log_dict({"contributions": contrib_df.to_dict(orient="records")}, "deliverables/contributions.json")
 
         # Log ROI (re-using columns from contrib_df)
-        roi_data = contrib_df[["channel", "roi"]].to_dict(orient="records")
+        roi_data = contrib_df[["channel", "roi", "total_spend", "contribution"]].to_dict(orient="records")
         mlflow.log_dict({"roi": roi_data}, "deliverables/roi.json")
         
-        # Log Regional Data
         # Iterate over actual regions to compute specific metrics
         print("\nComputing regional metrics...")
         regional_data_list = []
+        
+        # Scale factors for log→linear conversion (region level)
+        scale_factor = total_revenue / (mean_log_revenue * n_obs_train + 1e-8)
         
         # In build logic, 'territory_idx' maps 0..N-1 to regions list order.
         for r_idx, region_name in enumerate(regions):
@@ -590,6 +614,7 @@ def run_hierarchical(
                 # Filter data
                 X_sub = m_data["X_spend_train"][mask]
                 idx_sub = m_data["territory_idx_train"][mask]
+                df_sub = m_data["df_train"].iloc[np.where(mask)[0]]
                 
                 # Compute contributions for this region
                 # compute_channel_contributions handles the beta_territory lookup using idx_sub
@@ -599,6 +624,15 @@ def run_hierarchical(
                     idx_sub,
                     m_data["channel_names"]
                 )
+                
+                # FIX: Convert log→linear and use raw spend for ROI
+                reg_contrib_df["contribution"] = reg_contrib_df["contribution"] * scale_factor
+                
+                for i, raw_col in enumerate(spend_cols_raw):
+                    if raw_col in df_sub.columns:
+                        reg_contrib_df.loc[i, "total_spend"] = df_sub[raw_col].sum()
+                
+                reg_contrib_df["roi"] = reg_contrib_df["contribution"] / (reg_contrib_df["total_spend"] + 1e-8)
                 
                 # Add percentage
                 if reg_contrib_df["contribution"].sum() > 0:
