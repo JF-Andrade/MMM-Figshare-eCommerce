@@ -657,21 +657,31 @@ def run_hierarchical(
         adstock_params = []
         saturation_params = []
         
-        for i, channel in enumerate(m_data["channel_names"]):
+        for channel in m_data["channel_names"]:
             try:
-                alpha = summary.loc[f"alpha_channel[{i}]", "mean"]
-                L = summary.loc[f"L_channel[{i}]", "mean"]
-                k = summary.loc[f"k_channel[{i}]", "mean"]
+                # az.summary uses channel names as index, not numeric indices
+                alpha = summary.loc[f"alpha_channel[{channel}]", "mean"]
+                L = summary.loc[f"L_channel[{channel}]", "mean"]
+                k = summary.loc[f"k_channel[{channel}]", "mean"]
                 
-                adstock_params.append({"channel": channel, "alpha_mean": float(alpha)})
+                # Calculate half-life from alpha: t_half = log(0.5) / log(alpha)
+                half_life = float(np.log(0.5) / (np.log(alpha) + 1e-8)) if alpha > 0 else 0.0
+                
+                adstock_params.append({
+                    "channel": channel, 
+                    "alpha_mean": float(alpha),
+                    "half_life_weeks": half_life
+                })
                 saturation_params.append({
                     "channel": channel, 
                     "L_mean": float(L),
                     "k_mean": float(k),
                     "lam_mean": float(1.0 / (L + 1e-8))
                 })
-            except KeyError:
-                pass
+            except KeyError as e:
+                print(f"Warning: Could not find parameter for {channel}: {e}")
+        
+        print(f"   Extracted global params for {len(adstock_params)} channels")
         
         # Extract TERRITORY-LEVEL parameters
         alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
