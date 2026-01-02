@@ -23,7 +23,6 @@ def shared_sidebar() -> dict | None:
     Returns:
         Loaded deliverables dict, or None if no runs available.
     """
-    """
     st.sidebar.markdown("### Settings")
     
     try:
