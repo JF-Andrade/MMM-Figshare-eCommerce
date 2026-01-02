@@ -16,6 +16,25 @@ Major refactoring to ensure all calculations correctly account for territory-spe
 | Home page showed global without label   | Added "(Global)" labels to KPIs                        | `Home.py`                    |
 | Model Details territory selector hidden | Made territory selector more prominent                 | `04_Model_Details.py`        |
 
+### [2026-01-02] Dashboard & Optimization Logic Fixes
+
+Resolved inconsistencies in Global Lift calculation and dashboard "Data not available" errors. Global metrics are now mathematically consistent with territory-level data.
+
+#### Critical Fixes
+
+| Issue                                | Fix Applied                                                   | File                         |
+| ------------------------------------ | ------------------------------------------------------------- | ---------------------------- |
+| Global Lift ~0.0%                    | Replaced Top-Down optimization with **Bottom-Up aggregation** | `regenerate_deliverables.py` |
+| "Data not available" (Model Details) | Fixed `az.summary` indexing (names vs indices)                | `regenerate_deliverables.py` |
+| KeyError: 'lift_absolute'            | Added safe dictionary access `.get()`                         | `01_Executive_Summary.py`    |
+| Inconsistent Budget Charts           | Global charts now reflect sum of territory optimizations      | `regenerate_deliverables.py` |
+
+#### New Features
+
+- **Actual vs Predicted Chart**: Added time-series comparison with territory filter to `05_Model_Comparison.py`.
+- **Improved Sidebar**: Simplified layout for professional look.
+- **Predictions Deliverable**: Pipeline now saves `predictions.json` for detailed analysis.
+
 ### New Deliverables
 
 - `adstock_territory.json` - Alpha by territory × channel
@@ -130,12 +149,14 @@ Comprehensive audit conducted through a thorough review. All issues identified h
 
 ### Data Pipeline
 
-- **M4 Fix** — Uses `iloc` instead of `loc` for robust index handling
+- **Robust indexing** — Uses `iloc` instead of `loc` for robust handling
 - **NaN warning** — Added logging before `fillna(0)` for debugging
 - **Holdout observed data** — Changed from NaN to zeros (C3 fix)
 
 ### Files Modified
 
-- `src/config.py` — C1, M1, M5 (prior values)
-- `src/models/hierarchical_bayesian.py` — M2, M3 (L_channel, L_territory)
-- `scripts/mmm_hierarchical.py` — C2, C3, M4 (normalization, holdout, iloc)
+| File                                  | Changes                                                                                      |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `src/config.py`                       | Updated priors for Student-T degrees of freedom, adstock territory, and saturation territory |
+| `src/models/hierarchical_bayesian.py` | Refactored `L_channel` to `HalfNormal` and `L_territory` to `softplus` for better gradients  |
+| `scripts/mmm_hierarchical.py`         | Fixed data leakage in normalization, holdout NaN handling, and switched to `iloc` indexing   |

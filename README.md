@@ -4,7 +4,7 @@
 [![PyMC-Marketing](https://img.shields.io/badge/PyMC--Marketing-0.8+-green.svg)](https://www.pymc-marketing.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Bayesian Marketing Mix Model to quantify the ROI of digital advertising channels and optimize budget allocation across Google, Meta, and TikTok platforms.
+Bayesian Marketing Mix Model to quantify the ROI of digital advertising channels and optimize budget allocation across Google, Meta, and TikTok platforms by territory.
 
 > [!NOTE] > **2025-12-31:** Technical audit completed. See [CHANGELOG.md](CHANGELOG.md) for all corrections.
 
@@ -79,6 +79,7 @@ Results and visualizations are saved to `models/`:
 - `channel_share_hdi.png` - Channel share with 94% HDI
 - `waterfall_decomposition.png` - Revenue decomposition
 - `contribution_curves.png` - Saturation curves
+- `actual_vs_predicted.png` - Model fit over time (available in Dashboard)
 - `roi_baseline.csv` - ROI rankings
 
 ---
