@@ -60,10 +60,12 @@ def main():
     metrics = []
 
     if lift:
+        lift_pct = lift.get('lift_pct', 0)
+        lift_abs = lift.get('lift_absolute', lift.get('revenue_lift', 0))
         metrics.append({
             "label": f"Projected Revenue Lift{context_label}",
-            "value": f"{lift['lift_pct']:.1f}%",
-            "delta": f"{lift['lift_absolute']:,.0f}",
+            "value": f"{lift_pct:.1f}%",
+            "delta": f"{lift_abs:,.0f}" if lift_abs else None,
         })
 
     if roi:
