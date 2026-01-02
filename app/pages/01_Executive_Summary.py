@@ -123,9 +123,17 @@ def main():
         lift_abs = lift.get("lift_absolute", 0)
         pct_fmt = ".2f" if lift_pct < 0.1 else ".1f"
         
+        # Adjust formatting for small currency values (normalized data or low absolute lift)
+        if abs(lift_abs) < 1.0:
+            abs_fmt = ",.4f"
+        elif abs(lift_abs) < 100:
+            abs_fmt = ",.2f"
+        else:
+            abs_fmt = ",.0f"
+        
         insight_box(
             f"Optimal budget allocation could increase revenue by **{lift_pct:{pct_fmt}}%** "
-            f"({lift_abs:,.0f} additional revenue).",
+            f"({lift_abs:{abs_fmt}} additional revenue).",
             insight_type="info",
         )
 

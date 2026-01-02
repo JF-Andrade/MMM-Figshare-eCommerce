@@ -23,7 +23,8 @@ def shared_sidebar() -> dict | None:
     Returns:
         Loaded deliverables dict, or None if no runs available.
     """
-    st.sidebar.title("MMM Dashboard")
+    """
+    st.sidebar.markdown("### Settings")
     
     try:
         client = get_mlflow_client()

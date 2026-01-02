@@ -6,7 +6,8 @@
 
 Bayesian Marketing Mix Model to quantify the ROI of digital advertising channels and optimize budget allocation across Google, Meta, and TikTok platforms by territory.
 
-> [!NOTE] > **2025-12-31:** Technical audit completed. See [CHANGELOG.md](CHANGELOG.md) for all corrections.
+> **Note:**
+> See [CHANGELOG.md](CHANGELOG.md) for recent updates.
 
 ---
 
