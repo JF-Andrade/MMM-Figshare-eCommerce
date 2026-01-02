@@ -23,8 +23,7 @@ def shared_sidebar() -> dict | None:
     Returns:
         Loaded deliverables dict, or None if no runs available.
     """
-    st.sidebar.title("MMM Dashboard")
-    st.sidebar.markdown("---")
+    st.sidebar.title("📊 MMM Dashboard")
     
     try:
         client = get_mlflow_client()
@@ -35,27 +34,14 @@ def shared_sidebar() -> dict | None:
             st.sidebar.info("Run `python scripts/mmm_hierarchical.py` first.")
             return None
         
-        # Run selector - use session_state to persist selection across pages
-        st.sidebar.subheader("Select Run")
+        # Run selector
         run_options = {
-            f"{r['run_name']} (R²: {r['r2_test']:.3f})" if r['r2_test'] else r['run_name']: r['run_id']
-            for r in runs
-        }
-        
-        # Find current selection index (default to 0 if not set)
-        current_run_id = st.session_state.get("run_id")
-        default_index = 0
-        if current_run_id:
-            for i, (label, rid) in enumerate(run_options.items()):
-                if rid == current_run_id:
-                    default_index = i
-                    break
+            f"{r['run_name']} (R²: {r['r2_test']:.3f})": r['run_id'] for r in runs if r['r2_test']
+        } or {r['run_name']: r['run_id'] for r in runs}
         
         selected_label = st.sidebar.selectbox(
-            "Model Run",
+            "🔘 Select Model Run",
             options=list(run_options.keys()),
-            index=default_index,
-            label_visibility="collapsed",
         )
         
         run_id = run_options[selected_label]
@@ -66,28 +52,26 @@ def shared_sidebar() -> dict | None:
             with st.spinner("Loading data..."):
                 st.session_state.deliverables = load_all_deliverables(run_id, client)
         
-        # Run info
+        # Key Metrics (compact view)
         run_info = next(r for r in runs if r['run_id'] == run_id)
         st.sidebar.markdown("---")
-        st.sidebar.caption("**Run Details**")
-        st.sidebar.text(f"Type: {run_info.get('model_type', 'unknown')}")
-        st.sidebar.text(f"Status: {run_info.get('status', 'unknown')}")
         
-        if run_info.get('r2_test'):
-            st.sidebar.text(f"R² Test: {run_info['r2_test']:.3f}")
-        if run_info.get('mape_test'):
-            st.sidebar.text(f"MAPE Test: {run_info['mape_test']:.1f}%")
+        col1, col2 = st.sidebar.columns(2)
+        r2 = run_info.get('r2_test', 0)
+        mape = run_info.get('mape_test', 0)
         
-        # Navigation help
-        st.sidebar.markdown("---")
-        st.sidebar.caption("**Pages**")
-        st.sidebar.markdown("""
-        - Executive Summary
-        - Budget Optimization
-        - Regional Analysis
-        - Model Details
-        - Model Comparison
-        """)
+        with col1:
+            st.metric("R² Test", f"{r2:.2%}" if r2 else "N/A")
+        with col2:
+            st.metric("MAPE", f"{mape:.1f}%" if mape else "N/A")
+        
+        # Advanced Details (collapsible)
+        with st.sidebar.expander("📋 Run Details"):
+            st.text(f"ID: {run_id[:8]}...")
+            st.text(f"Type: {run_info.get('model_type', 'unknown')}")
+            st.text(f"Status: {run_info.get('status', 'FINISHED')}")
+            if run_info.get('training_time'):
+                st.text(f"Training: {run_info['training_time']:.0f}s")
         
         return st.session_state.get("deliverables")
         
