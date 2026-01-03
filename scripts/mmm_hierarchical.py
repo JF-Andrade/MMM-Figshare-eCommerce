@@ -52,16 +52,11 @@ from src.preprocessing import (
     filter_low_variance_channels,
     normalize_spend_by_currency,
     apply_adstock_per_territory,
-    apply_saturation_transform,
     create_hierarchy_indices,
-    apply_adstock_per_territory,
-    apply_saturation_transform,
-    create_hierarchy_indices,
-    compute_temporal_features,
     prepare_weekly_data,
 )
 from src.validation import get_panel_holdout_indices
-from src.evaluation import check_convergence, compute_roi_by_region, evaluate_model
+from src.evaluation import check_convergence, compute_channel_metrics_by_region, evaluate_model
 from src.models.hierarchical_bayesian import (
     build_hierarchical_mmm,
     fit_model as fit_custom_model,
@@ -95,7 +90,7 @@ def prepare_hierarchical_data(
     df: pd.DataFrame,
     regions: list[str],
 ) -> tuple[pd.DataFrame, dict]:
-    from src.preprocessing import engineer_features
+
 
     all_data = []
     for region in regions:
@@ -108,16 +103,17 @@ def prepare_hierarchical_data(
 
     df_combined = pd.concat(all_data, ignore_index=True)
 
-    # 1. Apply FULL feature engineering (Efficiency, Cost, Customer, Temporal, Rolling, Share)
-    df_combined = engineer_features(df_combined, date_col=DATE_COL)
-
     # 2. Add trend per region (normalized)
     for region in regions:
         mask = df_combined[GEO_COL] == region
         df_combined.loc[mask, "trend"] = np.arange(mask.sum()) / (mask.sum() + 1)
 
     # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
-    df_combined = compute_temporal_features(df_combined, date_col=DATE_COL)
+    # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
+    # REDUHNDANCY REMOVED: Already computed in prepare_weekly_data() per region
+    # and preserved during concatenation. Calling it here again would overwrite
+    # aggregated event flags (like Black Friday) with incorrect weekly-start values.
+
 
     # C2 FIX: Removed normalize_spend_by_currency() here
     # Normalization now happens in prepare_model_data() AFTER train/test split
@@ -182,7 +178,7 @@ def prepare_model_data(
     # Temporal Split
     if train_indices is None or test_indices is None:
         train_indices, test_indices = get_panel_holdout_indices(
-            df, GEO_COL, HOLDOUT_WEEKS
+            df, GEO_COL, DATE_COL, HOLDOUT_WEEKS
         )
 
     # M4 FIX: Use iloc for robust index handling (avoid issues if index is not contiguous)
@@ -394,11 +390,14 @@ def run_hierarchical(
     output_dir: Path,
     max_regions: int | None = None,
     parent_run_id: str | None = None,
-) -> tuple[pm.Model, az.InferenceData, dict]:
+    dry_run: bool = False,
+) -> tuple[pm.Model, az.InferenceData | None, dict]:
     """Run complete hierarchical MMM pipeline with MLflow tracking."""
     import pymc as pm  # Local import for robustness
     print("=" * 60)
     print("CUSTOM NESTED HIERARCHICAL MMM")
+    if dry_run:
+        print("(DRY RUN MODE: SKIPPING SAMPLING)")
     print("=" * 60)
 
     # Setup MLflow
@@ -423,6 +422,12 @@ def run_hierarchical(
     # 1. Prepare Data
     df_combined, indices = prepare_hierarchical_data(df, regions)
     m_data = prepare_model_data(df_combined, indices)
+    
+    if dry_run:
+        print("\n[Dry Run] Data preparation complete.")
+        print(f"Regions: {len(regions)}")
+        print(f"Features: {len(m_data['feature_names'])}")
+        return None, None, {"dry_run": True}
 
     # Start MLflow run (nested if called from pipeline)
     with mlflow.start_run(
@@ -738,20 +743,86 @@ def run_hierarchical(
         mlflow.log_dict({"saturation_territory": saturation_territory_params}, "deliverables/saturation_territory.json")
         print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
 
-        # 7. ROI with Uncertainty (HDI)
-        print("\nComputing ROI with uncertainty intervals...")
-        roi_hdi_df = compute_roi_with_hdi(
-            idata,
-            m_data["X_spend_train"],
-            m_data["territory_idx_train"],
-            m_data["channel_names"],
-            hdi_prob=0.94,
-            n_samples=500,
+        # 6. Compute Efficiency Metrics (iROAS, CAC, Attribution)
+        print("\nComputing Channel Efficiency Metrics...")
+        from src.evaluation import compute_channel_metrics, compute_blended_metrics, compute_channel_metrics_by_region
+        from src.config import ACQUISITION_COLS, REVENUE_COL, GEO_COL
+        
+        # Determine cols for CAC/Blended calc
+        acq_col = ACQUISITION_COLS[0]  # First Purchases
+        rev_col = REVENUE_COL          # Total Revenue
+        
+        # Compute Blended Metrics (Global)
+        blended_metrics = compute_blended_metrics(
+            spend_df=m_data["X_spend_train"], # Use train set or full? Using train for model alignment
+            acquisition_df=m_data["df_train"],          # Must match indices
+            spend_cols=m_data["channel_names"],
+            revenue_col=rev_col,
+            acquisition_col=acq_col,
+        )
+        print(f"Blended ROAS: {blended_metrics['blended_roas']:.2f}")
+        print(f"Blended CAC: {blended_metrics['blended_cac']:.2f}")
+
+        # Compute Channel Metrics (Validation: ensuring index alignment)
+        # Note: compute_channel_metrics needs FULL dataframe for total new customers if we want full period attribution
+        # But here we are evaluating on Train set usually? Or Full?
+        # PyMC-Marketing's compute_channel_contribution usually covers the period of X provided.
+        # So we pass X_train and df_train.
+        
+        metrics_df = compute_channel_metrics(
+            mmm=model,
+            X=m_data["X_spend_train"],
+            acquisition_data=m_data["df_train"],
+            acquisition_col=acq_col,
+            target_col=rev_col,
+        )
+        
+        # Save metrics
+        print("\nTop Channels by iROAS:")
+        print(metrics_df[["channel", "iroas", "cac"]].head())
+        
+        mlflow.log_dict({"blended_metrics": blended_metrics}, "deliverables/blended_metrics.json")
+        mlflow.log_dict(
+            {"channel_metrics": metrics_df.to_dict(orient="records")},
+            "deliverables/channel_metrics.json"
+        )
+
+        # 7. Compute Regional Efficiency Metrics
+        print("\nComputing Regional Efficiency...")
+        metrics_region_df = compute_channel_metrics_by_region(
+            mmm=model,
+            X=m_data["X_spend_train"],
+            acquisition_data=m_data["df_train"],
+            geo_col=GEO_COL,
+            acquisition_col=acq_col,
+        )
+        mlflow.log_dict(
+            {"channel_metrics_region": metrics_region_df.to_dict(orient="records")},
+            "deliverables/channel_metrics_region.json"
+        )
+        
+        # 7b. ROI HDI (Probabilistic) - Updated to use new keys if possible, or keep simple ROI
+        # For HDI we stick to contribution/spend since it's purely model derived (no heuristic attribution)
+        print("\nComputing ROI HDI...")
+        from src.evaluation import compute_roi_hdi
+        roi_hdi_df = compute_roi_hdi(
+            model, 
+            m_data["X_spend_train"], 
+            hdi_prob=0.94
         )
         mlflow.log_dict(
             {"roi_hdi": roi_hdi_df.to_dict(orient="records")},
             "deliverables/roi_hdi.json"
         )
+        
+        # Legacy Support for validate_and_save_deliverables
+        # Map iroas back to 'roi' and revenue_contribution to 'contribution' for schema validation
+        # Also map 'spend' to 'total_spend' for budget optimization function compatibility
+        contrib_df = metrics_df.rename(columns={
+            "iroas": "roi",
+            "revenue_contribution": "contribution",
+            "spend": "total_spend"
+        })
         print(f"ROI HDI computed for {len(roi_hdi_df)} channels")
         
         # 8. Saturation Curves Visualization
@@ -860,6 +931,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Hierarchical MMM Training")
     parser.add_argument("--max-regions", type=int, default=None, help="Limit number of regions")
+    parser.add_argument("--dry-run", action="store_true", help="Run quickly without sampling for verification")
     args = parser.parse_args()
     
-    run_hierarchical(DATA_PATH, OUTPUT_DIR, args.max_regions)
+    run_hierarchical(DATA_PATH, OUTPUT_DIR, args.max_regions, dry_run=args.dry_run)

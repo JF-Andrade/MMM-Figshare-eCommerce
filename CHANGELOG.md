@@ -2,6 +2,43 @@
 
 All notable changes to the hierarchical MMM model.
 
+## [2026-01-03] Preprocessing & Validation Refactoring
+
+Major code quality improvements and bug fixes in preprocessing, validation, and baseline model.
+
+### Refactoring
+
+| Change                            | Description                                                         | File               |
+| --------------------------------- | ------------------------------------------------------------------- | ------------------ |
+| Split `compute_temporal_features` | Created `add_seasonality_features` and `add_event_features` for SRP | `preprocessing.py` |
+| Consolidated feature loops        | Merged 3 redundant loops into 1 in `prepare_baseline_features`      | `preprocessing.py` |
+| Centralized validation logic      | Moved `transform_test_fold` to `validation.py`                      | `validation.py`    |
+| Module-level imports              | Moved lazy imports to top-level (PEP 8)                             | `validation.py`    |
+| Type hint corrections             | Fixed return type `list[float]` → `np.ndarray`                      | `validation.py`    |
+
+### Bug Fixes
+
+| Issue                                    | Fix Applied                                                                  | File              |
+| ---------------------------------------- | ---------------------------------------------------------------------------- | ----------------- |
+| Ridge Baseline negative R² (overfitting) | Excluded `is_black_friday`, `is_q4` from baseline controls                   | `mmm_baseline.py` |
+| Saturation variance collapse             | Raised `BAYESIAN_SATURATION_BOUNDS` lower from 0.01 to 0.1                   | `config.py`       |
+| Panel split silent leakage risk          | Added explicit `sort_values` by `[geo, date]` in `get_panel_holdout_indices` | `validation.py`   |
+| Missing return statement                 | Restored `return train_indices, test_indices` after refactor                 | `validation.py`   |
+| Dead/unsafe code                         | Removed unused `time_series_holdout_split`                                   | `validation.py`   |
+
+### Hardening
+
+- Added data sufficiency check in `get_panel_holdout_indices` (raises `ValueError` if territory has ≤ holdout_size rows)
+- Parameterized `prepare_baseline_features` and `transform_test_fold` to accept optional feature lists
+
+### Baseline Performance (Post-Fix)
+
+- **R² Train**: 0.728
+- **R² Test**: 0.227 ✅
+- **MAPE**: 19.4%
+
+---
+
 ## [2026-01-02] Territory Hierarchy Architecture & Dashboard Context
 
 Major refactoring to ensure all calculations correctly account for territory-specific parameters.
@@ -152,6 +189,18 @@ Comprehensive audit conducted through a thorough review. All issues identified h
 - **Robust indexing** — Uses `iloc` instead of `loc` for robust handling
 - **NaN warning** — Added logging before `fillna(0)` for debugging
 - **Holdout observed data** — Changed from NaN to zeros (C3 fix)
+
+### Added
+
+- **Metric Upgrade**: Integrated **CAC** (Customer Acquisition Cost) and **iROAS** (Incremental Return on Ad Spend) into the core pipeline and dashboard.
+- **New Dashboard Page**: `06_Channel_Efficiency.py` for detailed efficiency analysis (CAC x iROAS matrix).
+- **Configuration**: Centralized `DEFAULT_CURRENCY` in `src/config.py`.
+
+### Changed
+
+- **Terminology**: Standardized dashboard labels from "ROI" to "**iROAS**" to accurately reflect incremental return logic.
+- **Docs**: Updated `README.md` and `docs/` to reflect metric definitions and data loading logic.
+- `LICENSE` file (MIT).
 
 ### Files Modified
 

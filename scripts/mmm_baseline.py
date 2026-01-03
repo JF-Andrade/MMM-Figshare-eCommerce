@@ -52,8 +52,10 @@ from src.preprocessing import (
     apply_saturation_with_max,
     filter_low_variance_channels,
     prepare_weekly_data,
+    prepare_weekly_data,
     prepare_baseline_features,
 )
+from src.validation import transform_test_fold
 from src.evaluation import evaluate_ridge_model, compute_ridge_roi
 from src.insights import compute_ridge_coefficients, plot_baseline_results
 
@@ -61,75 +63,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def _transform_test_fold(
-    df_test: pd.DataFrame,
-    channels: list[str],
-    channel_max_dict: dict[str, float],
-    y_mean: float,
-    adstock_decay: float,
-    saturation_half: float,
-    target_col: str,
-    other_spend_sources: list[str] | None = None,
-) -> tuple[pd.DataFrame, np.ndarray]:
-    """
-    Transform test fold using train statistics to prevent data leakage.
-    
-    Args:
-        df_test: Test fold DataFrame.
-        channels: List of channel names (from train fold, may include OTHER_SPEND).
-        channel_max_dict: Max adstock values per channel (from train fold).
-        y_mean: Mean of target variable (from train fold).
-        adstock_decay: Adstock decay rate.
-        saturation_half: Half-saturation point.
-        target_col: Name of target column.
-        other_spend_sources: List of original channel names that were aggregated
-                            into OTHER_SPEND (if applicable).
-    
-    Returns:
-        (X_test, y_test) transformed using train statistics.
-    """
-    from src.config import CONTROL_COLS, SEASON_COLS, TRAFFIC_COLS
-    
-    df = df_test.copy()
-    feature_cols = []
-    
-    # Aggregate low-spend channels into OTHER_SPEND
-    if "OTHER_SPEND" in channels and other_spend_sources:
-        other_spend = pd.Series(0.0, index=df.index)
-        for src_col in other_spend_sources:
-            if src_col in df.columns:
-                other_spend += df[src_col].fillna(0)
-        df["OTHER_SPEND"] = other_spend
-    
-    for c in channels:
-        # Skip if channel doesn't exist in test fold
-        if c not in df.columns:
-            continue
-            
-        col_adstock = f"{c}_adstock"
-        col_sat = f"{c}_sat"
-        
-        # Apply adstock (causal transformation, no leakage issue)
-        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
-        
-        # Apply saturation using TRAIN max (prevents leakage)
-        train_max = channel_max_dict.get(c, df[col_adstock].max())
-        df[col_sat] = apply_saturation_with_max(
-            df[col_adstock].values,
-            train_max,
-            saturation_half
-        )
-        feature_cols.append(col_sat)
-    
-    # Add control, seasonality, and traffic features
-    for col in CONTROL_COLS + SEASON_COLS + TRAFFIC_COLS:
-        if col in df.columns:
-            feature_cols.append(col)
-    
-    X = df[feature_cols].fillna(0)
-    y = df[target_col].values / y_mean  # Use TRAIN y_mean
-    
-    return X, y
+
 
 
 def train_ridge_model(
@@ -172,6 +106,14 @@ def run_ridge_baseline(
     df = load_data(data_path, currency=DEFAULT_CURRENCY)
     df_weekly = prepare_weekly_data(df, region=region or TARGET_TERRITORY)
 
+    # EXCLUDE COLLINEAR FLAGS FROM BASELINE
+    # Ridge Regression cannot handle the strong multicollinearity between 
+    # specific event flags (Black Friday, Q4) and the corresponding spend spikes.
+    # We rely on Adstocked Spend + Fourier Seasonality for the baseline.
+    from src.config import CONTROL_COLS
+    baseline_controls = [c for c in CONTROL_COLS if c not in ["is_black_friday", "is_q4"]]
+    print(f"\n   Baseline Control Cols: {baseline_controls}")
+
     # Compute train end index for FINAL evaluation (not for optimization loop)
     # The optimization loop will use its own internal CV splits on the development set
     dev_end_idx = len(df_weekly) - HOLDOUT_WEEKS
@@ -192,7 +134,7 @@ def run_ridge_baseline(
         # but use proper CV splits for scoring. This is a reasonable compromise:
         # - Minor leakage in saturation normalization (uses global max)
         # - But stable channel selection and feature alignment across folds
-        X, y, _, _, _, _ = prepare_baseline_features(
+        X, y, channels, y_mean, channel_max_dict, other_spend_sources = prepare_baseline_features(
             df_dev, 
             adstock_decay=decay,
             saturation_half=sat_half,
@@ -201,6 +143,7 @@ def run_ridge_baseline(
             min_nonzero_ratio=MIN_NONZERO_RATIO,
             min_spend_threshold=MIN_SPEND_THRESHOLD,
             train_end_idx=len(df_dev),
+            control_cols=baseline_controls,
             verbose=False,
         )
         
@@ -209,8 +152,20 @@ def run_ridge_baseline(
         scores = []
         
         for train_index, test_index in tscv.split(X):
-            X_train_cv, X_test_cv = X.iloc[train_index], X.iloc[test_index]
-            y_train_cv, y_test_cv = y[train_index], y[test_index]
+            X_test_cv, y_test_cv = transform_test_fold(
+                df_dev.iloc[test_index],
+                channels,
+                channel_max_dict,
+                y_mean,
+                decay,
+                sat_half,
+                TARGET_COL,
+                other_spend_sources,
+                control_cols=baseline_controls,
+            )
+            
+            X_train_cv = X.iloc[train_index]
+            y_train_cv = y[train_index]
             
             pipeline = Pipeline([
                 ("scaler", StandardScaler()),
@@ -245,7 +200,7 @@ def run_ridge_baseline(
     print(f"   CV R²: {best_score:.3f} (conservative cross-validated estimate)")
 
     # Prepare final features with best params
-    X, y, channels, y_mean, channel_max_dict, _ = prepare_baseline_features(
+    X, y, channels, y_mean, channel_max_dict, other_spend_sources = prepare_baseline_features(
         df_weekly, 
         adstock_decay=best_decay,
         saturation_half=best_sat,
@@ -253,14 +208,25 @@ def run_ridge_baseline(
         target_col=TARGET_COL,
         min_nonzero_ratio=MIN_NONZERO_RATIO,
         min_spend_threshold=MIN_SPEND_THRESHOLD,
-        train_end_idx=train_end_idx
+        train_end_idx=train_end_idx,
+        control_cols=baseline_controls,
     )
-
-    # Split
+    # Prepare test set
+    X_test, y_test = transform_test_fold(
+        df_weekly.iloc[train_end_idx:],
+        channels,
+        channel_max_dict,
+        y_mean,
+        best_decay,
+        best_sat,
+        TARGET_COL,
+        other_spend_sources,
+        control_cols=baseline_controls,
+    )
+    
+    # Split Train
     X_train = X.iloc[:train_end_idx]
-    X_test = X.iloc[train_end_idx:]
     y_train = y[:train_end_idx]
-    y_test = y[train_end_idx:]
     
     # Extract dates for plotting
     dates = pd.to_datetime(df_weekly[DATE_COL])

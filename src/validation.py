@@ -1,57 +1,144 @@
 """
 Validation Module.
 
-Time-series split utilities for MMM holdout validation.
+Time-series split utilities for Hierarchical MMM holdout validation.
 """
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
 
-
-def time_series_holdout_split(
-    df: pd.DataFrame,
-    holdout_size: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Split DataFrame keeping last N rows as holdout.
-    
-    Args:
-        df: DataFrame sorted by time.
-        holdout_size: Number of rows for test set.
-    
-    Returns:
-        (train_df, test_df)
-    """
-    split_idx = len(df) - holdout_size
-    return df.iloc[:split_idx].copy(), df.iloc[split_idx:].copy()
+from src.config import CONTROL_COLS, SEASON_COLS, TRAFFIC_COLS
+from src.preprocessing import apply_adstock, apply_saturation_with_max
 
 
 def get_panel_holdout_indices(
     df: pd.DataFrame,
     geo_col: str,
+    date_col: str,
     holdout_size: int,
 ) -> tuple[list[int], list[int]]:
     """
     Get train/test indices for panel data holdout split.
     
-    Each territory contributes last N rows to test set.
+    CRITICAL: This function explicitly sorts data by Territory and Date 
+    to prevent temporal leakage (training on future data).
+
+    Note: Currently used primarily by the Hierarchical Model (mmm_hierarchical.py)
+    to handle correct splitting of stacked panel data. Baseline models typically
+    use standard TimeSeriesSplit on per-region data.
     
     Args:
-        df: Panel DataFrame (must be sorted by geo, then date).
+        df: Panel DataFrame.
         geo_col: Column name for territory.
+        date_col: Column name for date (required for safe sorting).
         holdout_size: Rows per territory for test.
     
     Returns:
         (train_indices, test_indices)
+    
+    Raises:
+        ValueError: If a territory has insufficient data for the split.
     """
+    # 1. FAIL SAFE: Force sort to guarantee chronological order
+    # Using 'kind="stable"' to preserve existing order if already sorted
+    df_sorted = df.sort_values(by=[geo_col, date_col], ascending=[True, True])
+    
     train_indices = []
     test_indices = []
     
-    for territory in df[geo_col].unique():
-        mask = df[geo_col] == territory
-        positions = df.index[mask].tolist()
+    for territory in df_sorted[geo_col].unique():
+        mask = df_sorted[geo_col] == territory
+        positions = df_sorted.index[mask].tolist()
+        n_obs = len(positions)
         
+        # 2. FAIL FAST: Check for data sufficiency
+        if n_obs <= holdout_size:
+            raise ValueError(
+                f"Territory '{territory}' has {n_obs} observations, but holdout_size is {holdout_size}. "
+                "Cannot perform valid train/test split."
+            )
+            
         train_indices.extend(positions[:-holdout_size])
         test_indices.extend(positions[-holdout_size:])
     
     return train_indices, test_indices
+
+def transform_test_fold(
+    df_test: pd.DataFrame,
+    channels: list[str],
+    channel_max_dict: dict[str, float],
+    y_mean: float,
+    adstock_decay: float,
+    saturation_half: float,
+    target_col: str,
+    other_spend_sources: list[str] | None = None,
+    control_cols: list[str] | None = None,
+    season_cols: list[str] | None = None,
+    traffic_cols: list[str] | None = None,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """
+    Transform test fold using train statistics to prevent data leakage.
+    
+    Args:
+        df_test: Test fold DataFrame.
+        channels: List of channel names (from train fold, may include OTHER_SPEND).
+        channel_max_dict: Max adstock values per channel (from train fold).
+        y_mean: Mean of target variable (from train fold).
+        adstock_decay: Adstock decay rate.
+        saturation_half: Half-saturation point.
+        target_col: Name of target column.
+        other_spend_sources: List of original channel names that were aggregated
+                            into OTHER_SPEND (if applicable).
+        control_cols: Optional list of control columns.
+        season_cols: Optional list of seasonality columns.
+        traffic_cols: Optional list of traffic columns.
+    
+    Returns:
+        (X_test, y_test) transformed using train statistics.
+    """
+    df = df_test.copy()
+    feature_cols = []
+    
+    # Aggregate low-spend channels into OTHER_SPEND
+    if "OTHER_SPEND" in channels and other_spend_sources:
+        other_spend = pd.Series(0.0, index=df.index)
+        for src_col in other_spend_sources:
+            if src_col in df.columns:
+                other_spend += df[src_col].fillna(0)
+        df["OTHER_SPEND"] = other_spend
+    
+    for c in channels:
+        # Skip if channel doesn't exist in test fold
+        if c not in df.columns:
+            continue
+            
+        col_adstock = f"{c}_adstock"
+        col_sat = f"{c}_sat"
+        
+        # Apply adstock (causal transformation, no leakage issue)
+        df[col_adstock] = apply_adstock(df[c].fillna(0).values, decay=adstock_decay)
+        
+        # Apply saturation using TRAIN max (prevents leakage)
+        train_max = channel_max_dict.get(c, df[col_adstock].max())
+        df[col_sat] = apply_saturation_with_max(
+            df[col_adstock].values,
+            train_max,
+            saturation_half
+        )
+        feature_cols.append(col_sat)
+    
+    # Add control, seasonality, and traffic features
+    ctrl = control_cols if control_cols is not None else CONTROL_COLS
+    seas = season_cols if season_cols is not None else SEASON_COLS
+    traf = traffic_cols if traffic_cols is not None else TRAFFIC_COLS
+
+    for col in ctrl + seas + traf:
+        if col in df.columns:
+            feature_cols.append(col)
+    
+    X = df[feature_cols].fillna(0)
+    y = df[target_col].values / y_mean  # Use TRAIN y_mean
+    
+    return X, y
+

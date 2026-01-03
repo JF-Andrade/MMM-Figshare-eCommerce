@@ -3,9 +3,9 @@
 import numpy as np
 import pandas as pd
 import pytest
+from src.config import RAW_DATE_COL
 
-
-def test_apply_geometric_adstock() -> None:
+def test_apply_adstock() -> None:
     """Test geometric adstock transformation."""
     from src.preprocessing import apply_adstock
 
@@ -22,114 +22,34 @@ def test_apply_geometric_adstock() -> None:
     assert result[2] == 25
 
 
-def test_apply_hill_saturation() -> None:
-    """Test Hill saturation transformation."""
-    from src.preprocessing import apply_saturation
-
-    data = np.array([0.0, 50.0, 100.0, 200.0, 500.0])
-    half_saturation = 100  # Point where response = 50%
-
-    result = apply_saturation(data, half_saturation=half_saturation)
-
-    # Zero spend should give zero output
-    assert result[0] == 0
-    # At half_saturation point, output should be ~0.5
-    assert 0.45 < result[2] < 0.55  # 100 spend at half_sat=100
-    # Higher spend should give higher but diminishing response
-    assert result[3] > result[2]  # 200 > 100
-    assert result[4] > result[3]  # 500 > 200
-
-
-def test_add_calendar_features() -> None:
-    """Test calendar feature generation."""
-    from src.preprocessing import add_calendar_features
-
-    df = pd.DataFrame({
-        "date": pd.to_datetime(["2023-12-25", "2023-01-01", "2023-07-04"]),
-        "value": [100, 200, 300],
-    })
-
-    result = add_calendar_features(df, date_col="date")
-
-    assert "day_of_week" in result.columns
-    assert "month" in result.columns
-    assert "quarter" in result.columns
-    assert "week_of_year" in result.columns
-
-
-def test_create_lag_features() -> None:
-    """Test lag feature creation."""
-    from src.preprocessing import create_lag_features
-
-    df = pd.DataFrame({
-        "date": pd.date_range("2023-01-01", periods=10, freq="D"),
-        "spend": [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
-    })
-
-    result = create_lag_features(df, columns=["spend"], lags=[1, 2])
-
-    assert "spend_lag1" in result.columns
-    assert "spend_lag2" in result.columns
-    # First row should have NaN for lag1
-    assert pd.isna(result["spend_lag1"].iloc[0])
-    # Second row's lag1 should be first row's spend
-    assert result["spend_lag1"].iloc[1] == 100
-
-
 def test_compute_temporal_features() -> None:
-    """Test temporal feature generation from DATE_DAY."""
-    from src.preprocessing import compute_temporal_features
+    """Test temporal feature generation (Seasonality, Holidays, Events)."""
+    from src.preprocessing import add_seasonality_features, add_event_features
     
+    # Create spanning dates including Black Friday
     df = pd.DataFrame({
-        "DATE_DAY": pd.to_datetime(["2023-01-01", "2023-01-02"]),  # Sunday, Monday
+        RAW_DATE_COL: pd.to_datetime([
+            "2023-01-01", # Normal day
+            "2023-11-24", # Black Friday 2023
+        ]),
+        "metric": [1, 1]
     })
     
-    result = compute_temporal_features(df)
+    result = add_event_features(df, date_col=RAW_DATE_COL)
+    result = add_seasonality_features(result, date_col=RAW_DATE_COL)
     
-    assert "DAY_OF_WEEK" in result.columns
-    assert "QUARTER" in result.columns
-    assert "WEEK_OF_YEAR" in result.columns
+    # Verify new features exist
+    expected_cols = [
+        "WEEK_SIN", "WEEK_COS",
+        "MONTH_SIN", "MONTH_COS",
+        "is_q4", "is_black_friday",
+        "is_holiday"
+    ]
     
-    # Sunday is index 6, normalized to 1.0 (6/6)
-    assert result["DAY_OF_WEEK"].iloc[0] == 1.0
-    # Monday is index 0, normalized to 0.0
-    assert result["DAY_OF_WEEK"].iloc[1] == 0.0
-
-
-def test_compute_spend_share() -> None:
-    """Test spend share computation."""
-    from src.preprocessing import compute_spend_share
+    for col in expected_cols:
+        assert col in result.columns, f"Missing {col}"
     
-    df = pd.DataFrame({
-        "A_SPEND": [100, 200],
-        "B_SPEND": [100, 600],
-    })
-    
-    spend_cols = ["A_SPEND", "B_SPEND"]
-    result = compute_spend_share(df, spend_cols=spend_cols)
-    
-    assert "A_SHARE" in result.columns
-    assert "B_SHARE" in result.columns
-    
-    # Row 0: 100 / (100+100) = 0.5
-    assert result["A_SHARE"].iloc[0] == 0.5
-    # Row 1: 200 / (200+600) = 0.25
-    assert result["A_SHARE"].iloc[1] == 0.25
-
-
-def test_engineer_features_orchestration() -> None:
-    """Test full feature engineering pipeline."""
-    from src.preprocessing import engineer_features
-    
-    df = pd.DataFrame({
-        "DATE_DAY": pd.to_datetime(["2023-01-01"]),
-        "GOOGLE_PAID_SEARCH_SPEND": [1000],
-    })
-    
-    # Works with defaults if config is mocked or spend_cols is passed
-    # Checking output structure only
-    result = engineer_features(df)
-    
-    assert "DAY_OF_WEEK" in result.columns
-    # GOOGLE_PAID_SEARCH_SPEND is in config.SPEND_COLS
-    assert "GOOGLE_PAID_SEARCH_SHARE" in result.columns
+    # Check Black Friday logic
+    # Nov 24 is Black Friday behavior (month 11, day 24 >= 23)
+    assert result.loc[1, "is_black_friday"] == 1
+    assert result.loc[0, "is_black_friday"] == 0
