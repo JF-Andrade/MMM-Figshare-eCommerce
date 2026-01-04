@@ -291,16 +291,19 @@ MMM-Figshare-eCommerce/
 │   ├── pipeline.py             # Pipeline orchestration logic
 │   ├── validation.py           # Holdout split utilities
 │   ├── schemas.py              # Pydantic data schemas
-│   ├── evaluation.py           # Convergence, metrics, ROI computation
-│   ├── insights.py             # Budget optimization, parameter extraction
+│   ├── baseline_evaluation.py  # Ridge model metrics & ROI computation
+│   ├── insights.py             # Logging, optimization, parameter extraction
 │   ├── comparison.py           # Model comparison utilities
+│   ├── utils/                  # Utility modules
+│   │   ├── __init__.py
+│   │   └── pymc_marketing_helpers.py  # Standard API helpers
 │   └── models/                 # Model package
 │       ├── __init__.py         # Package exports
 │       └── hierarchical_bayesian.py  # Bayesian MMM with learned transforms
 │
 ├── app/
 │   ├── Home.py                 # Streamlit main entry point
-│   ├── mlflow_loader.py        # MLflow data loading
+│   ├── mlflow_loader.py        # MLflow data loading (adapter pattern)
 │   ├── shared.py               # Shared UI components and configs
 │   ├── components/             # Reusable UI widgets
 │   └── pages/                  # Dashboard pages
@@ -308,7 +311,8 @@ MMM-Figshare-eCommerce/
 │       ├── 02_Budget_Optimization.py
 │       ├── 03_Regional_Analysis.py
 │       ├── 04_Model_Details.py
-│       └── 05_Model_Comparison.py
+│       ├── 05_Model_Comparison.py
+│       └── 06_Channel_Efficiency.py  # CAC, ROAS metrics
 │
 ├── tests/
 │   ├── test_data_loader.py     # Data loading tests
