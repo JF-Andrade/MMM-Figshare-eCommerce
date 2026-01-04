@@ -49,6 +49,9 @@ def main():
     else:
         optimization = deliverables.get("optimization")
         lift = deliverables.get("revenue_lift")
+        
+        # Debug: Show global mode active
+        st.caption("Showing Global optimization data. Territory breakdown requires pipeline re-run.")
 
     if not optimization:
         st.warning("Optimization data not available.")

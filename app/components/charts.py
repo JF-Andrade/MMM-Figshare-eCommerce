@@ -186,30 +186,56 @@ def saturation_curves_chart(saturation: list[dict]) -> None:
         saturation: List of saturation parameter records with 'L_mean' and 'k_mean'.
     """
     import numpy as np
+    import plotly.express as px
 
     fig = go.Figure()
 
     x_range = np.linspace(0.01, 1, 100)  # Normalized spend [0, 1]
+    
+    # Use plotly color sequence for consistent colors
+    colors = px.colors.qualitative.Plotly
 
-    for ch in saturation:
+    for idx, ch in enumerate(saturation):
         # Hill saturation: x^k / (L^k + x^k)
         L = ch.get("L_mean", 0.3)
         k = ch.get("k_mean", 2.0)
         
         y = (x_range ** k) / (L ** k + x_range ** k + 1e-8)
+        channel_name = ch["channel"]
+        color = colors[idx % len(colors)]
 
         fig.add_trace(go.Scatter(
             x=x_range,
             y=y,
             mode="lines",
-            name=ch["channel"],
+            name=channel_name,
+            line=dict(color=color),
         ))
+        
+        # Add vertical line at L (half-saturation point)
+        y_at_L = (L ** k) / (L ** k + L ** k + 1e-8)  # Should be ~0.5
+        fig.add_vline(
+            x=L,
+            line_width=1,
+            line_dash="dot",
+            line_color=color,
+            opacity=0.5,
+        )
 
     fig.update_layout(
         title="Channel Saturation Curves (Hill Function)",
         xaxis_title="Spend (normalized 0-1)",
         yaxis_title="Saturation Effect (0-1)",
         height=400,
+    )
+    
+    # Add annotation for L interpretation
+    fig.add_annotation(
+        x=0.95, y=0.05,
+        text="Dotted lines = Half-saturation (L)",
+        showarrow=False,
+        font=dict(size=10, color="gray"),
+        xref="paper", yref="paper"
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -439,6 +465,14 @@ def actual_vs_predicted_chart(predictions: list[dict], metrics: dict = None) -> 
 
     df = pd.DataFrame(predictions)
     df["date"] = pd.to_datetime(df["date"])
+    
+    # Aggregate by date when multiple territories are present
+    if "territory" in df.columns and df["territory"].nunique() > 1:
+        df = df.groupby(["date", "split"], as_index=False).agg({
+            "actual": "sum",
+            "predicted": "sum"
+        })
+    
     df = df.sort_values("date")
     
     train_df = df[df["split"] == "train"]

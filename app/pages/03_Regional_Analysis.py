@@ -105,7 +105,7 @@ def main():
         rank = ["1st", "2nd", "3rd"][i - 1]
         st.markdown(
             f"**{rank}: {region['region']}** - "
-            f"Avg ROI: {region['avg_roi']:.2f}x, "
+            f"Avg ROI: {region['avg_iroas']:.2f}x, "
             f"Best Channel: {region['best_channel']}"
         )
 

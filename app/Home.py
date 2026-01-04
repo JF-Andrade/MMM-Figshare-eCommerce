@@ -34,7 +34,14 @@ def main():
 
     lift = deliverables.get("revenue_lift")
     if lift:
-        col1.metric("Revenue Lift (Global)", f"{lift.get('lift_pct', 0):.1f}%")
+        lift_pct = lift.get('lift_pct', 0)
+        lift_abs = lift.get('lift_absolute', 0)
+        # Format small percentages properly
+        if abs(lift_pct) < 0.01:
+            pct_str = f"{lift_pct:.2e}%"
+        else:
+            pct_str = f"{lift_pct:.1f}%"
+        col1.metric("Revenue Lift (Global)", pct_str, delta=f"+{lift_abs:,.0f}" if lift_abs else None)
 
     roi = deliverables.get("roi")
     if roi:

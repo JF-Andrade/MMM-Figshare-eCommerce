@@ -287,9 +287,9 @@ MMM-Figshare-eCommerce/
 ├── src/
 │   ├── config.py               # Centralized configuration (all hyperparameters)
 │   ├── data_loader.py          # Data loading and validation
-│   ├── preprocessing.py        # Adstock, saturation, feature engineering
+│   ├── preprocessing.py        # Pipeline orchestration & data prep
+│   ├── transformations.py      # Core math & feature engineering helpers
 │   ├── pipeline.py             # Pipeline orchestration logic
-│   ├── validation.py           # Holdout split utilities
 │   ├── schemas.py              # Pydantic data schemas
 │   ├── baseline_evaluation.py  # Ridge model metrics & ROI computation
 │   ├── insights.py             # Logging, optimization, parameter extraction

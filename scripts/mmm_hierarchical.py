@@ -50,12 +50,11 @@ from src.config import (
 from src.data_loader import get_valid_regions, load_data
 from src.preprocessing import (
     filter_low_variance_channels,
-    normalize_spend_by_currency,
-    apply_adstock_per_territory,
     create_hierarchy_indices,
     prepare_weekly_data,
+    get_panel_holdout_indices,
 )
-from src.validation import get_panel_holdout_indices
+from src.transformations import normalize_spend_by_currency
 from src.models.hierarchical_bayesian import (
     build_hierarchical_mmm,
     fit_model as fit_custom_model,
@@ -70,6 +69,7 @@ from src.insights import (
     plot_regional_comparison,
     plot_roi_heatmap,
     plot_saturation_curves_hierarchical,
+    log_marginal_roas,
 )
 
 if TYPE_CHECKING:
@@ -614,6 +614,9 @@ def run_hierarchical(
         roi_data = contrib_df[["channel", "roi", "total_spend", "contribution"]].to_dict(orient="records")
         mlflow.log_dict({"roi": roi_data}, "deliverables/roi.json")
         
+        # Log marginal ROAS analysis
+        log_marginal_roas(contrib_df, saturation_params)
+        
         # Iterate over actual regions to compute specific metrics
         print("\nComputing regional metrics...")
         regional_data_list = []
@@ -685,6 +688,13 @@ def run_hierarchical(
                 # Calculate half-life from alpha: t_half = log(0.5) / log(alpha)
                 half_life = float(np.log(0.5) / (np.log(alpha) + 1e-8)) if alpha > 0 else 0.0
                 
+                # Compute max_spend from training data raw spend column
+                raw_spend_col = f"{channel}_SPEND"
+                if raw_spend_col in m_data["df_train"].columns:
+                    max_spend = float(m_data["df_train"][raw_spend_col].max())
+                else:
+                    max_spend = None
+                
                 adstock_params.append({
                     "channel": channel, 
                     "alpha_mean": float(alpha),
@@ -694,7 +704,8 @@ def run_hierarchical(
                     "channel": channel, 
                     "L_mean": float(L),
                     "k_mean": float(k),
-                    "lam_mean": float(1.0 / (L + 1e-8))
+                    "lam_mean": float(1.0 / (L + 1e-8)),
+                    "max_spend": max_spend
                 })
             except KeyError as e:
                 print(f"Warning: Could not find parameter for {channel}: {e}")
@@ -768,8 +779,10 @@ def run_hierarchical(
         # ROI with HDI already comes from compute_roi_with_hdi in hierarchical_bayesian.py
         print("\nComputing ROI HDI...")
         roi_hdi_df = compute_roi_with_hdi(
-            idata, 
-            m_data,
+            idata=idata,
+            X_spend=m_data["X_spend_train"],
+            territory_idx=m_data["territory_idx_train"],
+            channel_names=m_data["channel_names"],
             hdi_prob=0.94
         )
         mlflow.log_dict(
@@ -823,6 +836,27 @@ def run_hierarchical(
             m_data["channel_names"],
             regions,
         )
+        
+        # FIX: Convert territory contributions from log scale to linear $ scale
+        contrib_by_territory_df["contribution_log"] = contrib_by_territory_df["contribution"]
+        contrib_by_territory_df["contribution"] = contrib_by_territory_df["contribution_log"] * scale_factor
+        
+        # FIX: Override total_spend with raw spend per territory (not normalized)
+        spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
+        df_train = m_data["df_train"]
+        
+        for idx, row in contrib_by_territory_df.iterrows():
+            territory = row["territory"]
+            channel = row["channel"]
+            raw_col = f"{channel}_SPEND"
+            if raw_col in df_train.columns:
+                terr_mask = df_train[GEO_COL] == territory
+                raw_spend = df_train.loc[terr_mask, raw_col].sum()
+                contrib_by_territory_df.loc[idx, "total_spend"] = float(raw_spend)
+        
+        # Recalculate ROI with correct scale
+        contrib_by_territory_df["roi"] = contrib_by_territory_df["contribution"] / (contrib_by_territory_df["total_spend"] + 1e-8)
+        
         mlflow.log_dict(
             {"contributions_territory": contrib_by_territory_df.to_dict(orient="records")},
             "deliverables/contributions_territory.json"

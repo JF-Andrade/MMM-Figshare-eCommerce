@@ -24,7 +24,7 @@ def main():
         st.warning("No model data available. Run the hierarchical model first.")
         return
 
-    # Territory selector
+    # "Territory selector"
     contributions_territory = deliverables.get("contributions_territory")
     
     if contributions_territory:
@@ -51,10 +51,14 @@ def main():
             lift = deliverables.get("revenue_lift")
             context_label = " (Global)"
     else:
+        # Fallback when no territory data available
         roi = deliverables.get("roi")
         contributions = deliverables.get("contributions")
         lift = deliverables.get("revenue_lift")
-        context_label = ""
+        context_label = " (Global)"
+        
+        # Debug: Show user that global mode is active
+        st.caption("Showing Global optimization data. Territory breakdown requires pipeline re-run.")
 
     # KPI Row
     metrics = []

@@ -2,6 +2,49 @@
 
 All notable changes to the MMM project.
 
+## [2026-01-04] Territory Data Scale Fix & Dashboard Enhancements
+
+Critical fix for territory-level contributions and optimization data.
+
+### Critical Fixes
+
+| Issue                                | Fix Applied                                            | File                  |
+| ------------------------------------ | ------------------------------------------------------ | --------------------- |
+| Territory contributions in log scale | Applied `scale_factor` for log→linear conversion       | `mmm_hierarchical.py` |
+| Territory spend normalized (0-1)     | Replaced with raw spend from `{CHANNEL}_SPEND` columns | `mmm_hierarchical.py` |
+| Territory ROI incorrect              | Recalculated using scaled contributions and raw spend  | `mmm_hierarchical.py` |
+
+### New Features
+
+| Feature                | Description                                        | File                  |
+| ---------------------- | -------------------------------------------------- | --------------------- |
+| Marginal ROAS Analysis | Compute incremental ROAS at different spend levels | `src/insights.py`     |
+| Max Spend Reference    | Added `max_spend` column to saturation parameters  | `mmm_hierarchical.py` |
+
+### Dashboard Improvements
+
+| Change                  | Description                                              | File                  |
+| ----------------------- | -------------------------------------------------------- | --------------------- |
+| Global Territory Filter | Single selector applies to all sections in Model Details | `04_Model_Details.py` |
+| Predictions Aggregation | Fixed timestamp error when "All Territories" selected    | `charts.py`           |
+| Saturation L-points     | Added vertical lines at half-saturation points           | `charts.py`           |
+
+---
+
+## [2026-01-04] Structural Refactoring
+
+Separate concerns between low-level math and pipeline orchestration.
+
+### Refactoring
+
+| Change                   | Description                                                    | File                     |
+| ------------------------ | -------------------------------------------------------------- | ------------------------ |
+| Create Math Layer        | Extracted `adstock`, `saturation`, `scaling` to pure functions | `src/transformations.py` |
+| Orchestration Layer      | `preprocessing.py` now orchestrates data flow and validation   | `src/preprocessing.py`   |
+| Remove Validation Module | Absorbed `validation.py` into `preprocessing.py` for cohesion  | `src/validation.py`      |
+
+---
+
 ## [2026-01-03] Preprocessing & Validation Refactoring
 
 Major code quality improvements in preprocessing, validation, and baseline model.

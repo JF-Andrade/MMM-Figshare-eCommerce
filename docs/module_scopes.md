@@ -6,8 +6,8 @@
 | --------------------------------- | --------------------------------------------------------- |
 | `config.py`                       | Constants, hyperparameters, PipelineConfig dataclass      |
 | `data_loader.py`                  | Load raw data, currency filtering, data validation        |
-| `preprocessing.py`                | Data transforms, feature engineering, adstock, saturation |
-| `validation.py`                   | Train/test splits respecting time series                  |
+| `preprocessing.py`                | **Orchestrator**: Pipelines, splits, validation           |
+| `transformations.py`              | **Core Math**: Adstock, Saturation, Scaling (Low-level)   |
 | `evaluation.py`                   | Metrics calculation, convergence diagnostics, ROI         |
 | `insights.py`                     | Parameter extraction, visualizations, budget optimization |
 | `schemas.py`                      | Pydantic models for deliverables                          |

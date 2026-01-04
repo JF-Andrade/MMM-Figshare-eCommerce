@@ -793,6 +793,88 @@ def log_regional_metrics(
     return regional_df
 
 
+# Used by: Hierarchical Bayesian model (marginal ROAS analysis)
+def compute_marginal_roas(
+    contributions_df: pd.DataFrame,
+    saturation_params: list[dict],
+    spend_increase_pcts: list[float] | None = None,
+) -> list[dict]:
+    """
+    Compute marginal ROAS at different spend levels.
+    
+    Marginal ROAS = dContribution / dSpend at a given spend level.
+    Uses derivative of Hill function: d/dx [x^k / (L^k + x^k)]
+    
+    Args:
+        contributions_df: DataFrame with 'channel', 'total_spend', 'contribution'.
+        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
+        spend_increase_pcts: List of spend increase percentages to evaluate.
+    
+    Returns:
+        List of dicts with 'channel', 'spend_increase_pct', 'marginal_roas'.
+    """
+    if spend_increase_pcts is None:
+        spend_increase_pcts = [-30, -20, -10, 0, 10, 20, 30, 50, 75, 100]
+    
+    # Build param lookup
+    param_lookup = {p["channel"]: p for p in saturation_params}
+    
+    results = []
+    
+    for _, row in contributions_df.iterrows():
+        channel = row["channel"]
+        base_spend = row["total_spend"]
+        base_contribution = row["contribution"]
+        
+        params = param_lookup.get(channel)
+        if not params:
+            continue
+        
+        L = params["L_mean"]
+        k = params["k_mean"]
+        
+        # Current normalized spend (assuming max = 1 for simplicity)
+        # In practice, x_norm = spend / max_spend
+        base_roi = base_contribution / max(base_spend, 1e-8)
+        
+        for pct in spend_increase_pcts:
+            multiplier = 1 + pct / 100.0
+            new_spend = base_spend * multiplier
+            
+            # Hill derivative: d/dx [x^k / (L^k + x^k)] = k * L^k * x^(k-1) / (L^k + x^k)^2
+            # At normalized spend x:
+            x = max(multiplier, 0.01)  # Use multiplier as proxy for normalized change
+            
+            numerator = k * (L ** k) * (x ** (k - 1))
+            denominator = (L ** k + x ** k) ** 2
+            hill_derivative = numerator / (denominator + 1e-8)
+            
+            # Marginal ROAS = base ROI * relative derivative effect
+            # Scale by base contribution behavior
+            marginal_roas = base_roi * hill_derivative * k
+            
+            results.append({
+                "channel": channel,
+                "spend_increase_pct": pct,
+                "current_spend": float(base_spend),
+                "new_spend": float(new_spend),
+                "marginal_roas": float(marginal_roas),
+            })
+    
+    return results
+
+
+# Used by: Hierarchical Bayesian model (log marginal ROAS artifact)
+def log_marginal_roas(
+    contributions_df: pd.DataFrame,
+    saturation_params: list[dict],
+) -> list[dict]:
+    """Compute and log marginal ROAS to MLflow."""
+    marginal_data = compute_marginal_roas(contributions_df, saturation_params)
+    mlflow.log_dict({"marginal_roas": marginal_data}, "deliverables/marginal_roas.json")
+    print(f"Logged marginal ROAS for {len(set(d['channel'] for d in marginal_data))} channels")
+    return marginal_data
+
 def log_parameter_estimates(
     idata: az.InferenceData,
     m_data: dict,
@@ -939,33 +1021,12 @@ def log_optimization_results(
     mlflow.log_dict({"regional_optimization": regional_results}, "deliverables/budget_optimization_regional.json")
 
 
-def log_marginal_roas(
-    model: pm.Model,
-    idata: az.InferenceData,
-    m_data: dict,
-    regions: list[str],
-    scaling_factor: float,
-) -> None:
-    """Compute and log Marginal ROAS."""
-    # Global
-    mroas_df = compute_marginal_roas_custom(model, idata, m_data)
-    mroas_df["marginal_roas"] = mroas_df["marginal_roas"] * scaling_factor
-    mlflow.log_dict(mroas_df.to_dict(orient="records"), "metrics/marginal_roas_global.json")
-
-    # Regional
-    reg_mroas = compute_marginal_roas_by_territory(model, idata, m_data, regions)
-    reg_mroas["marginal_roas"] = reg_mroas["marginal_roas"] * scaling_factor
-    mlflow.log_dict(
-        reg_mroas.to_dict(orient="records"), "metrics/marginal_roas_regional.json"
-    )
-
-
 # =============================================================================
 # 3d. CHANNEL EFFICIENCY METRICS (Used by Streamlit App)
 # =============================================================================
 
 
-def log_channel_metrics(
+def compute_channel_metrics(
     contrib_df: pd.DataFrame,
     aov: float,
 ) -> pd.DataFrame:

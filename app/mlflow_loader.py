@@ -139,38 +139,30 @@ def load_deliverable(run_id: str, name: str, client: MlflowClient | None = None)
         client = get_mlflow_client()
 
     # 1. Define Mapping: App Key -> Pipeline Artifact Path
-    # "None" means the artifact does not exist in the pipeline yet.
     ARTIFACT_MAPPING = {
-        # Direct Mappings
+        # Direct Mappings (Split Artifacts)
+        "adstock": "deliverables/adstock.json",
+        "adstock_territory": "deliverables/adstock_territory.json",
+        "saturation": "deliverables/saturation.json",
+        "saturation_territory": "deliverables/saturation_territory.json",
+        "contributions": "deliverables/contributions.json",
+        "contributions_territory": "deliverables/contributions_territory.json",
+        "roi": "deliverables/roi.json",
+        "roi_hdi": "deliverables/roi_hdi.json",
+        "regional": "deliverables/regional.json",
+        "optimization": "deliverables/optimization.json",
+        "optimization_territory": "deliverables/optimization_territory.json",
+        "revenue_lift": "deliverables/revenue_lift.json",
+        "lift_by_territory": "deliverables/lift_by_territory.json",
         "predictions": "deliverables/predictions.json",
-        
-        # Path/Name Adaptations
-        "contributions": "metrics/global_contributions.json",
-        "roi_hdi": "metrics/roi_hdi.json",
-        "regional": "metrics/regional_contributions.json",
-        "optimization": "deliverables/budget_optimization_global.json",
-        "optimization_territory": "deliverables/budget_optimization_regional.json",
-        "marginal_roas": "metrics/marginal_roas_global.json",
-        
-        # Merged Files (Handled specially below)
-        "adstock": "metrics/parameter_summary.json",
-        "adstock_territory": "metrics/parameter_summary.json",
-        "saturation": "metrics/parameter_summary.json",
-        "saturation_territory": "metrics/parameter_summary.json",
-        
-        # Derived/Missing
-        "roi": "metrics/roi_hdi.json",  # Will extract simplified version
-        "contributions_territory": "metrics/regional_contributions.json", # Will extract if needed
         "channel_metrics": "deliverables/channel_metrics.json",
         "blended_metrics": "deliverables/blended_metrics.json",
-        "revenue_lift": "deliverables/budget_optimization_global.json", # Extract lift metrics
-        "lift_by_territory": "deliverables/budget_optimization_regional.json", # Extract lift metrics
+        "marginal_roas": "deliverables/marginal_roas.json", # Attempt mapping if exists
     }
 
     artifact_path = ARTIFACT_MAPPING.get(name)
 
     if not artifact_path:
-        # Artifact known to be missing or unmapped
         return None
 
     try:
@@ -178,64 +170,61 @@ def load_deliverable(run_id: str, name: str, client: MlflowClient | None = None)
         with open(local_path) as f:
             data = json.load(f)
             
-        # 2. Handle Merged/Derived Data Logic
+        # 2. Extract Inner Data from Wrapper
+        # All artifacts follow {"key_name": actual_data} pattern
+        # Map artifact name to its wrapper key explicitly
+        WRAPPER_KEYS = {
+            "adstock": "adstock",
+            "adstock_territory": "adstock_territory",
+            "saturation": "saturation",
+            "saturation_territory": "saturation_territory",
+            "contributions": "contributions",
+            "contributions_territory": "contributions_territory",
+            "roi": "roi",
+            "roi_hdi": "roi_hdi",
+            "regional": "regional",
+            "optimization": "optimization",
+            "optimization_territory": "optimization_territory",
+            "revenue_lift": "revenue_lift",
+            "lift_by_territory": "lift_by_territory",
+            "predictions": "predictions",
+            "channel_metrics": "channel_metrics",
+            "blended_metrics": None,  # Flat dict, no wrapper
+            "marginal_roas": "marginal_roas",
+        }
         
-        # Parameter Splitting
-        if name == "adstock":
-            return data.get("adstock_params")
-        elif name == "adstock_territory":
-            return data.get("adstock_territory_params")
-        elif name == "saturation":
-            return data.get("saturation_params")
-        elif name == "saturation_territory":
-            return data.get("saturation_territory_params")
+        if isinstance(data, dict):
+            wrapper_key = WRAPPER_KEYS.get(name)
             
-        # ROI Simplification
-        elif name == "roi":
-            # App expects simple list of dicts with 'roi' key
-            # roi_hdi has 'roi_mean', 'roi_hdi_low', etc.
-            if isinstance(data, list):
+            # blended_metrics is flat dict (no wrapper)
+            if wrapper_key is None:
+                return data
+            
+            # Extract using explicit wrapper key
+            if wrapper_key in data:
+                data = data[wrapper_key]
+            elif len(data) == 1:
+                # Fallback: single key wrapper
+                data = next(iter(data.values()))
+        
+        # 3. Additional transformations for specific formats
+        
+        # ROI: ensure list format with 'roi' key (some old formats use 'roi_mean')
+        if name == "roi" and isinstance(data, list) and len(data) > 0:
+            if "roi_mean" in data[0]:
                 return [
                     {
                         "channel": item.get("channel"),
                         "roi": item.get("roi_mean"),
-                        "contribution": item.get("contribution"), # If available
-                        "spend": item.get("total_spend") # If available
+                        "contribution": item.get("contribution"),
+                        "spend": item.get("total_spend")
                     }
                     for item in data
                 ]
-            return data
-
-        # Lift Extraction
-        elif name == "revenue_lift":
-             # Optimization file contains "metrics" key with lift info
-             if isinstance(data, dict) and "metrics" in data:
-                 return data["metrics"]
-             return None
-             
-        elif name == "lift_by_territory":
-             # Regional optimization is a dict of territory -> result
-             # We need to aggregate the "metrics" from each territory
-             if isinstance(data, dict):
-                 lift_list = []
-                 for terr, result in data.items():
-                     if "metrics" in result:
-                         m = result["metrics"]
-                         m["territory"] = terr
-                         lift_list.append(m)
-                 return lift_list
-             return None
-
-        # Regional Contributions Flattening (if needed)
-        elif name == "contributions_territory":
-            # If regional file is already flat list, return it
-            # If it's something else, adapt. Currently it's likely a flat list from log_regional_metrics
-            return data
 
         return data
 
-    except Exception as e:
-        # print(f"Warning: Could not load '{name}' from {artifact_path}: {e}")
+    except Exception:
         return None
 
 
