@@ -81,6 +81,9 @@ def optimization_comparison_chart(optimization: list[dict]) -> None:
         optimization: List of optimization records.
     """
     df = pd.DataFrame(optimization)
+    
+    # Normalize column names (territory uses optimal_spend, global uses optimized_spend)
+    opt_col = "optimized_spend" if "optimized_spend" in df.columns else "optimal_spend"
 
     fig = go.Figure()
 
@@ -94,7 +97,7 @@ def optimization_comparison_chart(optimization: list[dict]) -> None:
     fig.add_trace(go.Bar(
         name="Optimal",
         x=df["channel"],
-        y=df["optimal_spend"],
+        y=df[opt_col],
         marker_color="coral",
     ))
 
@@ -117,18 +120,21 @@ def reallocation_chart(optimization: list[dict]) -> None:
         optimization: List of optimization records.
     """
     df = pd.DataFrame(optimization)
-    df = df.sort_values("change_pct")
+    
+    # Normalize column names (global uses delta_spend_pct, territory uses change_pct)
+    pct_col = "delta_spend_pct" if "delta_spend_pct" in df.columns else "change_pct"
+    df = df.sort_values(pct_col)
 
-    colors = ["green" if x > 0 else "red" for x in df["change_pct"]]
+    colors = ["green" if x > 0 else "red" for x in df[pct_col]]
 
     fig = px.bar(
         df,
-        x="change_pct",
+        x=pct_col,
         y="channel",
         orientation="h",
         title="Budget Reallocation",
-        labels={"change_pct": "Change (%)", "channel": "Channel"},
-        color=df["change_pct"] > 0,
+        labels={pct_col: "Change (%)", "channel": "Channel"},
+        color=df[pct_col] > 0,
         color_discrete_map={True: "green", False: "red"},
     )
 

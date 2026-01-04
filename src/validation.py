@@ -16,53 +16,43 @@ def get_panel_holdout_indices(
     df: pd.DataFrame,
     geo_col: str,
     date_col: str,
-    holdout_size: int,
+    holdout_weeks: int,
 ) -> tuple[list[int], list[int]]:
     """
-    Get train/test indices for panel data holdout split.
+    Get train/test indices for panel data with temporal holdout.
     
-    CRITICAL: This function explicitly sorts data by Territory and Date 
-    to prevent temporal leakage (training on future data).
-
-    Note: Currently used primarily by the Hierarchical Model (mmm_hierarchical.py)
-    to handle correct splitting of stacked panel data. Baseline models typically
-    use standard TimeSeriesSplit on per-region data.
+    For each region, the last `holdout_weeks` observations are held out.
+    This ensures temporal consistency while respecting panel structure.
     
     Args:
-        df: Panel DataFrame.
-        geo_col: Column name for territory.
-        date_col: Column name for date (required for safe sorting).
-        holdout_size: Rows per territory for test.
+        df: Panel DataFrame with date and geo columns.
+        geo_col: Name of the geography/region column.
+        date_col: Name of the date column.
+        holdout_weeks: Number of weeks to hold out for testing.
     
     Returns:
-        (train_indices, test_indices)
-    
-    Raises:
-        ValueError: If a territory has insufficient data for the split.
+        Tuple of (train_indices, test_indices) as lists of integer positions.
     """
-    # 1. FAIL SAFE: Force sort to guarantee chronological order
-    # Using 'kind="stable"' to preserve existing order if already sorted
-    df_sorted = df.sort_values(by=[geo_col, date_col], ascending=[True, True])
-    
     train_indices = []
     test_indices = []
     
-    for territory in df_sorted[geo_col].unique():
-        mask = df_sorted[geo_col] == territory
-        positions = df_sorted.index[mask].tolist()
-        n_obs = len(positions)
+    # Ensure date column is datetime
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    
+    for region in df[geo_col].unique():
+        region_mask = df[geo_col] == region
+        region_df = df[region_mask].sort_values(date_col)
         
-        # 2. FAIL FAST: Check for data sufficiency
-        if n_obs <= holdout_size:
-            raise ValueError(
-                f"Territory '{territory}' has {n_obs} observations, but holdout_size is {holdout_size}. "
-                "Cannot perform valid train/test split."
-            )
-            
-        train_indices.extend(positions[:-holdout_size])
-        test_indices.extend(positions[-holdout_size:])
+        n_obs = len(region_df)
+        n_train = max(n_obs - holdout_weeks, 1)
+        
+        region_idx = region_df.index.tolist()
+        train_indices.extend(region_idx[:n_train])
+        test_indices.extend(region_idx[n_train:])
     
     return train_indices, test_indices
+
 
 def transform_test_fold(
     df_test: pd.DataFrame,

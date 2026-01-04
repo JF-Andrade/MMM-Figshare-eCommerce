@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler
 
 def test_compute_ridge_roi_reverses_scaler():
     """Test that ROI correctly reverses StandardScaler transformation."""
-    from src.evaluation import compute_ridge_roi
+    from src.baseline_evaluation import compute_ridge_roi
     
     # Synthetic data with known relationships
     np.random.seed(42)
@@ -42,7 +42,7 @@ def test_compute_ridge_roi_reverses_scaler():
 
 def test_roi_coefficients_are_positive_for_positive_relationship():
     """Test that positive spend-revenue relationship gives positive ROI."""
-    from src.evaluation import compute_ridge_roi
+    from src.baseline_evaluation import compute_ridge_roi
     
     np.random.seed(42)
     X = pd.DataFrame({
@@ -64,7 +64,7 @@ def test_roi_coefficients_are_positive_for_positive_relationship():
 
 def test_roi_coefficient_original_unscales_correctly():
     """Test that coefficient_original correctly reverses StandardScaler."""
-    from src.evaluation import compute_ridge_roi
+    from src.baseline_evaluation import compute_ridge_roi
     
     np.random.seed(42)
     # Data with known true coefficient for validation
@@ -91,7 +91,7 @@ def test_roi_coefficient_original_unscales_correctly():
 
 def test_roi_with_multiple_channels():
     """Test ROI computation with multiple channels."""
-    from src.evaluation import compute_ridge_roi
+    from src.baseline_evaluation import compute_ridge_roi
     
     np.random.seed(42)
     X = pd.DataFrame({

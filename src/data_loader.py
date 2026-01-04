@@ -4,25 +4,15 @@ Data Loading Module.
 Loads and validates MMM data from various sources.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from src.config import TARGET_COL
-
-if TYPE_CHECKING:
-    pass
-
-# Default configuration
-DEFAULT_CURRENCY = "GBP"
-
+from src.config import TARGET_COL, MIN_WEEKS_PER_REGION
 
 def load_data(
     data_path: Path,
-    currency: str | None = DEFAULT_CURRENCY,
+    currency: str | None = None,
 ) -> pd.DataFrame:
     """
     Load and validate MMM data with optional currency filtering.
@@ -44,52 +34,24 @@ def load_data(
 
     print(f"Loaded data: {df.shape}")
 
-    # Compute net revenue if not present
-    df = compute_target_variable(df)
-
-    # Filter to specified currency (if provided)
-    if currency and "CURRENCY_CODE" in df.columns:
+    # Informational: Show currency breakdown if available
+    if "CURRENCY_CODE" in df.columns:
         currency_revenue = df.groupby("CURRENCY_CODE")[TARGET_COL].sum()
         print(f"Revenue by currency:\n{currency_revenue.sort_values(ascending=False).head()}")
 
+    # Filter logic (Native Exception if column missing)
+    if currency:
         df = df[df["CURRENCY_CODE"] == currency].copy()
         print(f"Filtered to: {currency} ({len(df):,} rows)")
-    elif "CURRENCY_CODE" in df.columns:
+    else:
         print(f"Loading all currencies ({len(df):,} rows)")
-
-    return df
-
-
-def compute_target_variable(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute net revenue target variable.
-
-    Formula: ALL_PURCHASES_NET_PRICE = ORIGINAL_PRICE - GROSS_DISCOUNT
-
-    Args:
-        df: DataFrame with purchase columns.
-
-    Returns:
-        DataFrame with target column added.
-    """
-    df = df.copy()
-
-    if TARGET_COL not in df.columns:
-        if "ALL_PURCHASES_ORIGINAL_PRICE" in df.columns:
-            df[TARGET_COL] = (
-                df["ALL_PURCHASES_ORIGINAL_PRICE"]
-                - df["ALL_PURCHASES_GROSS_DISCOUNT"].fillna(0)
-            )
-            print(f"Computed {TARGET_COL} from ORIGINAL_PRICE - GROSS_DISCOUNT")
-        else:
-            raise ValueError("Missing columns to compute target variable")
 
     return df
 
 
 def get_valid_regions(
     df: pd.DataFrame,
-    min_weeks: int = 52,
+    min_weeks: int = MIN_WEEKS_PER_REGION,
     region_col: str = "TERRITORY_NAME",
     date_col: str = "DATE_DAY",
 ) -> list[str]:

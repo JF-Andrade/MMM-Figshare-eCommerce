@@ -12,9 +12,20 @@ from typing import Any
 
 from mlflow import MlflowClient
 
+import sys
+
 # Default MLflow configuration
-MLFLOW_TRACKING_URI = "file:./mlruns"
-EXPERIMENT_NAME = "MMM-Experiments"
+# Add path to allow importing src
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.append(str(PROJECT_ROOT))
+
+# Import centralized config
+try:
+    from src.config import MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME as EXPERIMENT_NAME
+except ImportError:
+    # Fallback if running outside of project structure (unlikely for streamlit)
+    MLFLOW_TRACKING_URI = "file:./mlruns"
+    EXPERIMENT_NAME = "MMM-Experiments"
 
 
 def get_mlflow_client(tracking_uri: str | None = None) -> MlflowClient:
@@ -112,34 +123,125 @@ def get_all_runs(client: MlflowClient | None = None, model_type: str | None = No
     ]
 
 
-def load_deliverable(run_id: str, name: str, client: MlflowClient | None = None) -> dict:
+def load_deliverable(run_id: str, name: str, client: MlflowClient | None = None) -> Any:
     """
-    Load a deliverable JSON from MLflow artifacts.
+    Load a deliverable from MLflow artifacts, adapting to pipeline paths.
 
     Args:
         run_id: MLflow run ID.
-        name: Deliverable name (without .json extension).
+        name: Deliverable key expected by App (e.g. 'contributions', 'adstock').
         client: Optional MLflow client.
 
     Returns:
-        Parsed JSON data.
+        Parsed data (dict or list), or None if not found/mapped.
     """
     if client is None:
         client = get_mlflow_client()
 
-    artifact_path = f"deliverables/{name}.json"
+    # 1. Define Mapping: App Key -> Pipeline Artifact Path
+    # "None" means the artifact does not exist in the pipeline yet.
+    ARTIFACT_MAPPING = {
+        # Direct Mappings
+        "predictions": "deliverables/predictions.json",
+        
+        # Path/Name Adaptations
+        "contributions": "metrics/global_contributions.json",
+        "roi_hdi": "metrics/roi_hdi.json",
+        "regional": "metrics/regional_contributions.json",
+        "optimization": "deliverables/budget_optimization_global.json",
+        "optimization_territory": "deliverables/budget_optimization_regional.json",
+        "marginal_roas": "metrics/marginal_roas_global.json",
+        
+        # Merged Files (Handled specially below)
+        "adstock": "metrics/parameter_summary.json",
+        "adstock_territory": "metrics/parameter_summary.json",
+        "saturation": "metrics/parameter_summary.json",
+        "saturation_territory": "metrics/parameter_summary.json",
+        
+        # Derived/Missing
+        "roi": "metrics/roi_hdi.json",  # Will extract simplified version
+        "contributions_territory": "metrics/regional_contributions.json", # Will extract if needed
+        "channel_metrics": "deliverables/channel_metrics.json",
+        "blended_metrics": "deliverables/blended_metrics.json",
+        "revenue_lift": "deliverables/budget_optimization_global.json", # Extract lift metrics
+        "lift_by_territory": "deliverables/budget_optimization_regional.json", # Extract lift metrics
+    }
+
+    artifact_path = ARTIFACT_MAPPING.get(name)
+
+    if not artifact_path:
+        # Artifact known to be missing or unmapped
+        return None
 
     try:
         local_path = client.download_artifacts(run_id, artifact_path)
         with open(local_path) as f:
-            return json.load(f)
+            data = json.load(f)
+            
+        # 2. Handle Merged/Derived Data Logic
+        
+        # Parameter Splitting
+        if name == "adstock":
+            return data.get("adstock_params")
+        elif name == "adstock_territory":
+            return data.get("adstock_territory_params")
+        elif name == "saturation":
+            return data.get("saturation_params")
+        elif name == "saturation_territory":
+            return data.get("saturation_territory_params")
+            
+        # ROI Simplification
+        elif name == "roi":
+            # App expects simple list of dicts with 'roi' key
+            # roi_hdi has 'roi_mean', 'roi_hdi_low', etc.
+            if isinstance(data, list):
+                return [
+                    {
+                        "channel": item.get("channel"),
+                        "roi": item.get("roi_mean"),
+                        "contribution": item.get("contribution"), # If available
+                        "spend": item.get("total_spend") # If available
+                    }
+                    for item in data
+                ]
+            return data
+
+        # Lift Extraction
+        elif name == "revenue_lift":
+             # Optimization file contains "metrics" key with lift info
+             if isinstance(data, dict) and "metrics" in data:
+                 return data["metrics"]
+             return None
+             
+        elif name == "lift_by_territory":
+             # Regional optimization is a dict of territory -> result
+             # We need to aggregate the "metrics" from each territory
+             if isinstance(data, dict):
+                 lift_list = []
+                 for terr, result in data.items():
+                     if "metrics" in result:
+                         m = result["metrics"]
+                         m["territory"] = terr
+                         lift_list.append(m)
+                 return lift_list
+             return None
+
+        # Regional Contributions Flattening (if needed)
+        elif name == "contributions_territory":
+            # If regional file is already flat list, return it
+            # If it's something else, adapt. Currently it's likely a flat list from log_regional_metrics
+            return data
+
+        return data
+
     except Exception as e:
-        raise ValueError(f"Could not load deliverable '{name}' from run {run_id}: {e}")
+        # print(f"Warning: Could not load '{name}' from {artifact_path}: {e}")
+        return None
 
 
 def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> dict[str, Any]:
     """
-    Load all 8 deliverables for a run.
+    Load all deliverables for a run.
 
     Args:
         run_id: MLflow run ID.
@@ -167,24 +269,17 @@ def load_all_deliverables(run_id: str, client: MlflowClient | None = None) -> di
         "revenue_lift",
         "lift_by_territory",
         "predictions",
+        # Missing but requested by App
+        "channel_metrics",
+        "blended_metrics" 
     ]
 
     deliverables = {}
     for name in deliverable_names:
-        try:
-            data = load_deliverable(run_id, name, client)
-            # Handle different JSON structures:
-            # Some are {name: [...]} and some are just [...]
-            if isinstance(data, dict) and name in data:
-                deliverables[name] = data[name]
-            elif isinstance(data, dict) and len(data) == 1:
-                # Single key dict - extract the value
-                deliverables[name] = list(data.values())[0]
-            else:
-                deliverables[name] = data
-        except Exception as e:
-            # Silent fail for optional deliverables
-            deliverables[name] = None
+        # load_deliverable now handles safe loading and adaption
+        data = load_deliverable(run_id, name, client)
+        if data is not None:
+            deliverables[name] = data
 
     return deliverables
 

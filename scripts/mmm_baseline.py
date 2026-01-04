@@ -8,20 +8,20 @@ Serves as comparison point for the Bayesian hierarchical model.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
+import mlflow
+import numpy as np
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
-import mlflow
-import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_percentage_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
 from skopt import gp_minimize
 from skopt.space import Real
 
@@ -45,6 +45,16 @@ from src.config import (
     SPEND_COLS,
     TARGET_COL,
     TARGET_TERRITORY,
+    CONTROL_COLS,
+    PROCESSED_DATA_DIR,
+    PROCESSED_FILENAME,
+    MODELS_DIR,
+    # Ridge Config
+    DEFAULT_RIDGE_ALPHA,
+    RIDGE_CV_SPLITS,
+    RIDGE_CV_GAP,
+    DELIVERABLES_DIR,
+    INSPECTION_DIR,
 )
 from src.data_loader import load_data
 from src.preprocessing import (
@@ -52,11 +62,10 @@ from src.preprocessing import (
     apply_saturation_with_max,
     filter_low_variance_channels,
     prepare_weekly_data,
-    prepare_weekly_data,
     prepare_baseline_features,
 )
 from src.validation import transform_test_fold
-from src.evaluation import evaluate_ridge_model, compute_ridge_roi
+from src.baseline_evaluation import evaluate_ridge_model, compute_ridge_roi
 from src.insights import compute_ridge_coefficients, plot_baseline_results
 
 if TYPE_CHECKING:
@@ -69,7 +78,7 @@ if TYPE_CHECKING:
 def train_ridge_model(
     X_train: pd.DataFrame,
     y_train: np.ndarray,
-    alpha: float = 10.0,
+    alpha: float = DEFAULT_RIDGE_ALPHA,
 ) -> tuple[Pipeline, float]:
     """Train Ridge Regression model with specified alpha."""
     pipeline = Pipeline([
@@ -84,56 +93,29 @@ def train_ridge_model(
     return pipeline, training_time
 
 
-def run_ridge_baseline(
-    data_path: Path,
-    output_dir: Path,
-    region: str | None = None,
-    parent_run_id: str | None = None,
-) -> tuple[Pipeline, pd.DataFrame, dict]:
-    """Run Ridge Regression baseline model."""
-    output_dir.mkdir(exist_ok=True, parents=True)
-
-    # Setup MLflow
+def _setup_mlflow() -> None:
+    """Initialize MLflow tracking."""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
-    print("=" * 60)
-    print("RIDGE REGRESSION BASELINE MODEL")
-    print("=" * 60)
 
-    # Load and prepare data
-    print("\n1. Loading data...")
-    df = load_data(data_path, currency=DEFAULT_CURRENCY)
-    df_weekly = prepare_weekly_data(df, region=region or TARGET_TERRITORY)
+def _get_baseline_controls() -> list[str]:
+    """Get non-collinear control columns for baseline."""
+    return [c for c in CONTROL_COLS if c not in ["is_black_friday", "is_q4"]]
 
-    # EXCLUDE COLLINEAR FLAGS FROM BASELINE
-    # Ridge Regression cannot handle the strong multicollinearity between 
-    # specific event flags (Black Friday, Q4) and the corresponding spend spikes.
-    # We rely on Adstocked Spend + Fourier Seasonality for the baseline.
-    from src.config import CONTROL_COLS
-    baseline_controls = [c for c in CONTROL_COLS if c not in ["is_black_friday", "is_q4"]]
-    print(f"\n   Baseline Control Cols: {baseline_controls}")
 
-    # Compute train end index for FINAL evaluation (not for optimization loop)
-    # The optimization loop will use its own internal CV splits on the development set
-    dev_end_idx = len(df_weekly) - HOLDOUT_WEEKS
-    train_end_idx = dev_end_idx  # Alias for compatibility with rest of script
-    df_dev = df_weekly.iloc[:dev_end_idx].copy()
-    
-    # --- Bayesian Optimization for Hyperparameters ---
+def _optimize_ridge_params(
+    df_dev: pd.DataFrame, 
+    baseline_controls: list[str]
+) -> tuple[float, float, float, float]:
+    """Perform Bayesian Optimization to find best hyperparameters."""
     print(f"\n2. Bayesian Optimization ({BAYESIAN_N_CALLS} iterations)...")
-    print(f"   • Strategy: Expanding Window CV (5 splits, gap=2)")
+    print(f"   • Strategy: Expanding Window CV ({RIDGE_CV_SPLITS} splits, gap={RIDGE_CV_GAP})")
     print(f"   • Development set: {len(df_dev)} weeks")
-    
-    from sklearn.model_selection import TimeSeriesSplit
 
     def objective(params):
         decay, sat_half, alpha = params
         
-        # HYBRID APPROACH: Transform globally on df_dev for channel consistency,
-        # but use proper CV splits for scoring. This is a reasonable compromise:
-        # - Minor leakage in saturation normalization (uses global max)
-        # - But stable channel selection and feature alignment across folds
         X, y, channels, y_mean, channel_max_dict, other_spend_sources = prepare_baseline_features(
             df_dev, 
             adstock_decay=decay,
@@ -147,8 +129,7 @@ def run_ridge_baseline(
             verbose=False,
         )
         
-        # Gap of 2 weeks to account for adstock carryover effect
-        tscv = TimeSeriesSplit(n_splits=5, gap=2)
+        tscv = TimeSeriesSplit(n_splits=RIDGE_CV_SPLITS, gap=RIDGE_CV_GAP)
         scores = []
         
         for train_index, test_index in tscv.split(X):
@@ -175,9 +156,7 @@ def run_ridge_baseline(
             pipeline.fit(X_train_cv, y_train_cv)
             scores.append(pipeline.score(X_test_cv, y_test_cv))
             
-        # Minimize negative R2 → maximize R2
-        mean_score = np.mean(scores)
-        return -mean_score
+        return -np.mean(scores)
 
     search_space = [
         Real(*BAYESIAN_ADSTOCK_BOUNDS, prior="log-uniform", name="adstock_decay"),
@@ -195,6 +174,117 @@ def run_ridge_baseline(
 
     best_decay, best_sat, best_alpha = result.x
     best_score = -result.fun
+    
+    return best_decay, best_sat, best_alpha, best_score
+
+
+def _persist_results(
+    pipeline: Pipeline,
+    roi_df: pd.DataFrame,
+    coef_df: pd.DataFrame,
+    metrics: dict,
+    X: pd.DataFrame,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    channels: list[str],
+    y_mean: float,
+    channel_max_dict: dict,
+    dates_train: pd.Series,
+    dates_test: pd.Series,
+    region: str,
+    best_decay: float,
+    best_sat: float,
+    best_alpha: float,
+    output_dir: Path,
+    parent_run_id: str | None = None,
+) -> None:
+    """Log results to MLflow and save artifacts locally."""
+    with mlflow.start_run(run_name="ridge_baseline", nested=parent_run_id is not None):
+        # Log parameters
+        mlflow.log_params({
+            "model_type": "ridge_baseline",
+            "region": region or TARGET_TERRITORY,
+            "n_channels": len(channels),
+            "adstock_decay": best_decay,
+            "saturation_half": best_sat,
+            "holdout_weeks": HOLDOUT_WEEKS,
+            "best_alpha": best_alpha,
+        })
+        
+        mlflow.log_metrics(metrics)
+
+        # Save to MLflow as JSON
+        DELIVERABLES_DIR.mkdir(exist_ok=True, parents=True)
+        
+        mlflow.log_dict({"metrics": metrics}, "deliverables/baseline_metrics.json")
+        mlflow.log_dict(
+            {"coefficients": coef_df.to_dict(orient="records")},
+            "deliverables/baseline_coefficients.json",
+        )
+        mlflow.log_dict(
+            {"roi": roi_df.to_dict(orient="records")},
+            "deliverables/baseline_roi.json",
+        )
+
+        # Plots
+        plot_baseline_results(
+            pipeline, X_train, X_test, y_train, y_test, 
+            coef_df, output_dir,
+            dates_train=dates_train, dates_test=dates_test
+        )
+        
+        print("\n4. Artifacts saved to models/")
+        plot_path = output_dir / "ridge_baseline_results.png"
+        print(f"   • {plot_path.name}")
+        print(f"   • ridge_coefficients.csv")
+        print(f"   • ridge_roi.csv")
+        mlflow.log_artifact(plot_path)
+
+        # Save locally
+        coef_df.to_csv(output_dir / "ridge_coefficients.csv", index=False)
+        roi_df.to_csv(output_dir / "ridge_roi.csv", index=False)
+        with open(output_dir / "ridge_metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+
+
+def run_ridge_baseline(
+    data_path: Path,
+    output_dir: Path,
+    region: str | None = None,
+    parent_run_id: str | None = None,
+    dry_run: bool = False,
+) -> tuple[Pipeline, pd.DataFrame, dict] | None:
+    """Run Ridge Regression baseline model."""
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    # Setup MLflow
+    _setup_mlflow()
+
+    print("=" * 60)
+    print("RIDGE REGRESSION BASELINE MODEL")
+    print("=" * 60)
+
+    # Load and prepare data
+    print("\n1. Loading data...")
+    df = load_data(data_path, currency=DEFAULT_CURRENCY)
+    df_weekly = prepare_weekly_data(df, region=region or TARGET_TERRITORY)
+
+    # Adstocked Spend + Fourier Seasonality for the baseline.
+    baseline_controls = _get_baseline_controls()
+    print(f"\n   Baseline Control Cols: {baseline_controls}")
+
+    # Compute train end index
+    train_end_idx = len(df_weekly) - HOLDOUT_WEEKS
+    df_dev = df_weekly.iloc[:train_end_idx].copy()
+    
+    if dry_run:
+        print("[Dry Run] Data preparation complete. Success.")
+        return None
+    
+    # --- Bayesian Optimization for Hyperparameters ---
+    best_decay, best_sat, best_alpha, best_score = _optimize_ridge_params(df_dev, baseline_controls)
 
     print(f"\n   Best: α={best_decay:.4f}, sat={best_sat:.4f}, ridge={best_alpha:.1f}")
     print(f"   CV R²: {best_score:.3f} (conservative cross-validated estimate)")
@@ -234,8 +324,7 @@ def run_ridge_baseline(
     dates_test = dates.iloc[train_end_idx:]
     
     # Save datasets for inspection
-    inspect_dir = PROJECT_ROOT / "data" / "inspection"
-    inspect_dir.mkdir(parents=True, exist_ok=True)
+    INSPECTION_DIR.mkdir(parents=True, exist_ok=True)
     
     # Combine X and y for easier inspection
     train_inspect = X_train.copy()
@@ -246,8 +335,8 @@ def run_ridge_baseline(
     test_inspect["target"] = y_test
     test_inspect["date"] = dates_test.values
     
-    train_inspect.to_parquet(inspect_dir / "baseline_train.parquet", index=False)
-    test_inspect.to_parquet(inspect_dir / "baseline_test.parquet", index=False)
+    train_inspect.to_parquet(INSPECTION_DIR / "baseline_train.parquet", index=False)
+    test_inspect.to_parquet(INSPECTION_DIR / "baseline_test.parquet", index=False)
 
     # Train final model
     pipeline, training_time = train_ridge_model(X_train, y_train, alpha=best_alpha)
@@ -264,64 +353,34 @@ def run_ridge_baseline(
     print(f"   • R² Test:  {metrics['r2_test']:.3f}")
     print(f"   • MAPE Test: {metrics['mape_test']:.1f}%")
 
-    # Use nested run if parent exists (called from pipeline)
-    with mlflow.start_run(run_name="ridge_baseline", nested=parent_run_id is not None):
-        # Log parameters
-        mlflow.log_params({
-            "model_type": "ridge_baseline",
-            "region": region or TARGET_TERRITORY,
-            "n_channels": len(channels),
-            "adstock_decay": best_decay,
-            "saturation_half": best_sat,
-            "holdout_weeks": HOLDOUT_WEEKS,
-            "best_alpha": best_alpha,
-        })
+
         
-        # Already trained and evaluated
-
-
-        mlflow.log_metrics(metrics)
-
-        # Coefficients
-        coef_df = compute_ridge_coefficients(pipeline, list(X.columns), channels)
-        roi_df = compute_ridge_roi(pipeline, X, channels, y_mean, channel_max_dict)
-
-        # Save to MLflow as JSON
-        mlflow.log_dict({"metrics": metrics}, "deliverables/baseline_metrics.json")
-        mlflow.log_dict(
-            {"coefficients": coef_df.to_dict(orient="records")},
-            "deliverables/baseline_coefficients.json",
-        )
-        mlflow.log_dict(
-            {"roi": roi_df.to_dict(orient="records")},
-            "deliverables/baseline_roi.json",
-        )
-
-        # Plots
-        plot_baseline_results(
-            pipeline, 
-            X_train, 
-            X_test, 
-            y_train, 
-            y_test, 
-            coef_df, 
-            output_dir,
-            dates_train=dates_train,
-            dates_test=dates_test
-        )
-        
-        print("\n4. Artifacts saved to models/")
-        plot_path = output_dir / "ridge_baseline_results.png"
-        print(f"   • {plot_path.name}")
-        print(f"   • ridge_coefficients.csv")
-        print(f"   • ridge_roi.csv")
-        mlflow.log_artifact(plot_path)
-
-        # Save locally
-        coef_df.to_csv(output_dir / "ridge_coefficients.csv", index=False)
-        roi_df.to_csv(output_dir / "ridge_roi.csv", index=False)
-        with open(output_dir / "ridge_metrics.json", "w") as f:
-            json.dump(metrics, f, indent=2)
+    # Persist Results
+    coef_df = compute_ridge_coefficients(pipeline, list(X.columns), channels)
+    roi_df = compute_ridge_roi(pipeline, X, channels, y_mean, channel_max_dict)
+    
+    _persist_results(
+        pipeline=pipeline,
+        roi_df=roi_df,
+        coef_df=coef_df,
+        metrics=metrics,
+        X=X,
+        X_train=X_train,
+        X_test=X_test,
+        y_train=y_train,
+        y_test=y_test,
+        channels=channels,
+        y_mean=y_mean,
+        channel_max_dict=channel_max_dict,
+        dates_train=dates_train,
+        dates_test=dates_test,
+        region=region or TARGET_TERRITORY,
+        best_decay=best_decay,
+        best_sat=best_sat,
+        best_alpha=best_alpha,
+        output_dir=output_dir,
+        parent_run_id=parent_run_id,
+    )
 
     print("\n" + "=" * 60)
     print("RIDGE BASELINE COMPLETE")
@@ -330,13 +389,18 @@ def run_ridge_baseline(
     return pipeline, roi_df, metrics
 
 
-# Alias for backward compatibility with pipeline
-run_baseline = run_ridge_baseline
-
-
 if __name__ == "__main__":
-    PROJECT_ROOT = Path(__file__).parent.parent
-    DATA_PATH = PROJECT_ROOT / "data" / "processed" / "mmm_data.parquet"
-    OUTPUT_DIR = PROJECT_ROOT / "models"
+    parser = argparse.ArgumentParser(description="MMM Baseline Model - Ridge Regression")
+    parser.add_argument("--data-path", type=Path, default=PROCESSED_DATA_DIR / PROCESSED_FILENAME, help="Path to processed data")
+    parser.add_argument("--output-dir", type=Path, default=MODELS_DIR, help="Directory to save outputs")
+    parser.add_argument("--region", type=str, default=None, help="Specific region to model (optional)")
+    parser.add_argument("--dry-run", action="store_true", help="Run only data preparation")
+    
+    args = parser.parse_args()
 
-    run_ridge_baseline(DATA_PATH, OUTPUT_DIR)
+    run_ridge_baseline(
+        args.data_path, 
+        args.output_dir, 
+        region=args.region,
+        dry_run=args.dry_run
+    )

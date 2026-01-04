@@ -77,10 +77,26 @@ def main():
         })
 
     regional = deliverables.get("regional")
-    if regional:
+    
+    # Blended Efficiency Metrics
+    blended = deliverables.get("blended_metrics")
+    
+    if blended:
         metrics.append({
-            "label": "Regions Analyzed",
-            "value": len(set(r.get("region") for r in regional)),
+            "label": "Blended ROAS (mROAS)",
+            "value": f"{blended.get('blended_roas', 0):.2f}x",
+        })
+        metrics.append({
+            "label": "Blended CAC",
+            "value": f"{blended.get('blended_cac', 0):.2f}",
+        })
+
+    if roi:
+        best = max(roi, key=lambda x: x.get("roi", 0))
+        metrics.append({
+            "label": f"Best Channel (iROAS){context_label}",
+            "value": best["channel"],
+            "delta": f"{best['roi']:.2f}x",
         })
 
     if contributions:
@@ -99,11 +115,11 @@ def main():
 
     with col1:
         if roi:
-            roi_bar_chart(roi, title=f"Channel ROI{context_label}")
+            roi_bar_chart(roi, title=f"Channel iROAS (Incremental Return){context_label}")
 
     with col2:
         if contributions:
-            contribution_pie_chart(contributions, title=f"Revenue Contribution{context_label}")
+            contribution_pie_chart(contributions, title=f"Incremental Contribution{context_label}")
 
     # Insights
     st.markdown("---")
@@ -113,8 +129,8 @@ def main():
         best = max(roi, key=lambda x: x.get("roi", 0))
         worst = min(roi, key=lambda x: x.get("roi", 0))
         insight_box(
-            f"**{best['channel']}** has the highest ROI at {best['roi']:.2f}x. "
-            f"Consider reallocating budget from **{worst['channel']}** (ROI: {worst['roi']:.2f}x).",
+            f"**{best['channel']}** has the highest iROAS at {best['roi']:.2f}x. "
+            f"Consider reallocating budget from **{worst['channel']}** (iROAS: {worst['roi']:.2f}x).",
             insight_type="success",
         )
 

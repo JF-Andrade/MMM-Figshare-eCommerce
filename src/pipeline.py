@@ -280,9 +280,9 @@ class MMMPipeline:
 
         logger.info("Training baseline model...")
 
-        from scripts.mmm_baseline import run_baseline
+        from scripts.mmm_baseline import run_ridge_baseline
 
-        mmm, roi_df, metrics = run_baseline(
+        mmm, roi_df, metrics = run_ridge_baseline(
             self.config.processed_data_path,
             self.config.models_dir,
             region=self.config.baseline_region,

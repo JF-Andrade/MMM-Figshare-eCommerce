@@ -56,7 +56,6 @@ from src.preprocessing import (
     prepare_weekly_data,
 )
 from src.validation import get_panel_holdout_indices
-from src.evaluation import check_convergence, compute_channel_metrics_by_region, evaluate_model
 from src.models.hierarchical_bayesian import (
     build_hierarchical_mmm,
     fit_model as fit_custom_model,
@@ -67,16 +66,7 @@ from src.models.hierarchical_bayesian import (
     compute_roi_with_hdi,
 )
 from src.insights import (
-    extract_adstock_params,
-    extract_saturation_params,
-    plot_adstock_decay,
-    plot_channel_contributions_waterfall,
-    plot_saturation_curves,
-    compute_marginal_roas,
-    compute_revenue_lift,
-    optimize_budget,
-    plot_marginal_roas_curves,
-    plot_optimization_results,
+    optimize_hierarchical_budget,
     plot_regional_comparison,
     plot_roi_heatmap,
     plot_saturation_curves_hierarchical,
@@ -463,7 +453,6 @@ def run_hierarchical(
             l_max=L_MAX,
             channel_names=m_data["channel_names"],
             feature_names=m_data["feature_names"],
-            use_student_t=True,
         )
 
         # 3. Fit Model
@@ -744,86 +733,51 @@ def run_hierarchical(
         print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
 
         # 6. Compute Efficiency Metrics (iROAS, CAC, Attribution)
+        # Uses the model's contribution estimates + AOV approach
         print("\nComputing Channel Efficiency Metrics...")
-        from src.evaluation import compute_channel_metrics, compute_blended_metrics, compute_channel_metrics_by_region
-        from src.config import ACQUISITION_COLS, REVENUE_COL, GEO_COL
+        from src.insights import compute_channel_metrics, compute_blended_metrics
         
-        # Determine cols for CAC/Blended calc
-        acq_col = ACQUISITION_COLS[0]  # First Purchases
-        rev_col = REVENUE_COL          # Total Revenue
+        # Calculate AOV from training data (total_revenue already computed in section 5)
+        # AOV = Total Revenue / Total Transactions
+        total_transactions = m_data["df_train"]["ALL_PURCHASES"].sum()
+        aov = total_revenue / total_transactions if total_transactions > 0 else 0
+        print(f"Global AOV: {aov:.2f}")
         
-        # Compute Blended Metrics (Global)
-        blended_metrics = compute_blended_metrics(
-            spend_df=m_data["X_spend_train"], # Use train set or full? Using train for model alignment
-            acquisition_df=m_data["df_train"],          # Must match indices
-            spend_cols=m_data["channel_names"],
-            revenue_col=rev_col,
-            acquisition_col=acq_col,
-        )
-        print(f"Blended ROAS: {blended_metrics['blended_roas']:.2f}")
-        print(f"Blended CAC: {blended_metrics['blended_cac']:.2f}")
-
-        # Compute Channel Metrics (Validation: ensuring index alignment)
-        # Note: compute_channel_metrics needs FULL dataframe for total new customers if we want full period attribution
-        # But here we are evaluating on Train set usually? Or Full?
-        # PyMC-Marketing's compute_channel_contribution usually covers the period of X provided.
-        # So we pass X_train and df_train.
-        
-        metrics_df = compute_channel_metrics(
-            mmm=model,
-            X=m_data["X_spend_train"],
-            acquisition_data=m_data["df_train"],
-            acquisition_col=acq_col,
-            target_col=rev_col,
-        )
+        # contrib_df already computed in section 5 (compute_channel_contributions)
+        # It has: channel, contribution, total_spend, roi, contribution_pct
+        # Compute channel metrics using AOV
+        metrics_df = compute_channel_metrics(contrib_df, aov)
         
         # Save metrics
         print("\nTop Channels by iROAS:")
         print(metrics_df[["channel", "iroas", "cac"]].head())
         
-        mlflow.log_dict({"blended_metrics": blended_metrics}, "deliverables/blended_metrics.json")
         mlflow.log_dict(
             {"channel_metrics": metrics_df.to_dict(orient="records")},
             "deliverables/channel_metrics.json"
         )
-
-        # 7. Compute Regional Efficiency Metrics
-        print("\nComputing Regional Efficiency...")
-        metrics_region_df = compute_channel_metrics_by_region(
-            mmm=model,
-            X=m_data["X_spend_train"],
-            acquisition_data=m_data["df_train"],
-            geo_col=GEO_COL,
-            acquisition_col=acq_col,
-        )
-        mlflow.log_dict(
-            {"channel_metrics_region": metrics_region_df.to_dict(orient="records")},
-            "deliverables/channel_metrics_region.json"
-        )
         
-        # 7b. ROI HDI (Probabilistic) - Updated to use new keys if possible, or keep simple ROI
-        # For HDI we stick to contribution/spend since it's purely model derived (no heuristic attribution)
+        # Compute blended (aggregate) metrics
+        blended_metrics = compute_blended_metrics(metrics_df)
+        print(f"Blended ROAS: {blended_metrics['blended_roas']:.2f}")
+        print(f"Blended CAC: {blended_metrics['blended_cac']:.2f}")
+        
+        mlflow.log_dict(blended_metrics, "deliverables/blended_metrics.json")
+
+        # 7. ROI HDI (Probabilistic)
+        # ROI with HDI already comes from compute_roi_with_hdi in hierarchical_bayesian.py
         print("\nComputing ROI HDI...")
-        from src.evaluation import compute_roi_hdi
-        roi_hdi_df = compute_roi_hdi(
-            model, 
-            m_data["X_spend_train"], 
+        roi_hdi_df = compute_roi_with_hdi(
+            idata, 
+            m_data,
             hdi_prob=0.94
         )
         mlflow.log_dict(
             {"roi_hdi": roi_hdi_df.to_dict(orient="records")},
             "deliverables/roi_hdi.json"
         )
-        
-        # Legacy Support for validate_and_save_deliverables
-        # Map iroas back to 'roi' and revenue_contribution to 'contribution' for schema validation
-        # Also map 'spend' to 'total_spend' for budget optimization function compatibility
-        contrib_df = metrics_df.rename(columns={
-            "iroas": "roi",
-            "revenue_contribution": "contribution",
-            "spend": "total_spend"
-        })
         print(f"ROI HDI computed for {len(roi_hdi_df)} channels")
+
         
         # 8. Saturation Curves Visualization
         print("\nGenerating saturation curves plot...")

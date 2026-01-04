@@ -25,7 +25,7 @@ def mock_mmm() -> MagicMock:
 
 def test_optimize_budget_returns_dataframe(mock_mmm: MagicMock) -> None:
     """Test that optimize_budget returns a DataFrame."""
-    from src.insights import optimize_budget
+    from src.utils.pymc_marketing_helpers import optimize_budget
 
     result = optimize_budget(mock_mmm, total_budget=1000)
 
@@ -37,7 +37,7 @@ def test_optimize_budget_returns_dataframe(mock_mmm: MagicMock) -> None:
 
 def test_budget_constraint_respected(mock_mmm: MagicMock) -> None:
     """Test that optimization runs without error."""
-    from src.insights import optimize_budget
+    from src.utils.pymc_marketing_helpers import optimize_budget
 
     result = optimize_budget(mock_mmm, total_budget=1000)
 
@@ -48,7 +48,7 @@ def test_budget_constraint_respected(mock_mmm: MagicMock) -> None:
 
 def test_change_percentage_calculated(mock_mmm: MagicMock) -> None:
     """Test that change percentage is calculated correctly."""
-    from src.insights import optimize_budget
+    from src.utils.pymc_marketing_helpers import optimize_budget
 
     result = optimize_budget(mock_mmm, total_budget=1000)
 
@@ -59,7 +59,7 @@ def test_change_percentage_calculated(mock_mmm: MagicMock) -> None:
 
 def test_plot_optimization_results(mock_mmm: MagicMock, tmp_path: Path) -> None:
     """Test that plot is created without error."""
-    from src.insights import optimize_budget, plot_optimization_results
+    from src.utils.pymc_marketing_helpers import optimize_budget, plot_optimization_results
 
     result = optimize_budget(mock_mmm, total_budget=1000)
     plot_optimization_results(result, tmp_path)

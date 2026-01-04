@@ -2,9 +2,13 @@
 Hierarchical Bayesian Marketing Mix Model.
 
 Implements a PyMC model with:
-- Currency → Territory nested hierarchy
-- Bayesian adstock (learned alpha per channel/territory)
-- Bayesian saturation (learned L, k per channel/territory)
+- Territory-level hierarchy (partial pooling across regions)
+- Hierarchical intercepts (global + territory offsets)
+- Bayesian adstock (learned alpha per channel, with territory offsets)
+- Bayesian saturation (learned L, k per channel, with territory offsets for L)
+- Hierarchical channel betas (global + territory offsets)
+- Feature coefficients (traffic, events, trend)
+- Seasonality coefficients (Fourier terms)
 - Student-T likelihood for robustness to outliers
 """
 
@@ -21,6 +25,40 @@ import pytensor.tensor as pt
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+from src.config import (
+    L_MAX,
+    PRIOR_ADSTOCK_ALPHA,
+    PRIOR_ADSTOCK_BETA,
+    PRIOR_SIGMA_ADSTOCK_TERRITORY,
+    PRIOR_SATURATION_L_SIGMA,
+    PRIOR_SATURATION_K_ALPHA,
+    PRIOR_SATURATION_K_BETA,
+    PRIOR_SIGMA_SATURATION_TERRITORY,
+    PRIOR_SIGMA_TERRITORY,
+    PRIOR_BETA_CHANNEL_SIGMA,
+    PRIOR_SIGMA_BETA_TERRITORY,
+    PRIOR_HORSESHOE_M0,
+    PRIOR_HORSESHOE_LAMBDA_BETA,
+    PRIOR_GAMMA_SEASON_SIGMA,
+    PRIOR_SIGMA_OBS,
+    PRIOR_NU_ALPHA,
+    PRIOR_NU_ALPHA,
+    PRIOR_NU_BETA,
+    PRIOR_HORSESHOE_NU,
+    PRIOR_HORSESHOE_C2_ALPHA,
+    PRIOR_HORSESHOE_C2_BETA,
+    EPSILON,
+    ADSTOCK_CLIP_MIN,
+    ADSTOCK_CLIP_MAX,
+    MCMC_CHAINS,
+    MCMC_DRAWS,
+    MCMC_TUNE,
+    MCMC_TARGET_ACCEPT,
+    MCMC_MAX_TREEDEPTH,
+    MCMC_SAMPLER,
+    SEED,
+)
 
 
 # =============================================================================
@@ -78,6 +116,8 @@ def hill_saturation_numpy(
     """
     Apply Hill saturation function in NumPy.
     
+    Formula: x^k / (L^k + x^k)
+    
     Args:
         x: Input values (adstocked spend)
         L: Half-saturation point (per observation or scalar)
@@ -86,17 +126,23 @@ def hill_saturation_numpy(
     Returns:
         Saturated values in [0, 1]
     """
-    eps = 1e-8
+    # Numerical stability: prevent division by zero and 0^k issues
+    eps = EPSILON
     x_safe = np.maximum(x, eps)
     L_safe = np.maximum(L, eps)
-    return np.power(x_safe, k) / (np.power(L_safe, k) + np.power(x_safe, k))
+    
+    # Hill function: x^k / (L^k + x^k)
+    x_powered = np.power(x_safe, k)
+    L_powered = np.power(L_safe, k)
+    
+    return x_powered / (L_powered + x_powered)
 
 
 # =============================================================================
 # PyTensor Transformation Functions
 # =============================================================================
 
-
+# Calculate Adstock per Territory
 def geometric_adstock_pytensor(
     x: pt.TensorVariable,
     alpha: pt.TensorVariable,
@@ -108,8 +154,7 @@ def geometric_adstock_pytensor(
     Adstock models the carryover effect of advertising:
     adstock[t] = x[t] + alpha * adstock[t-1]
     
-    CRITICAL: Resets adstock to 0 when territory_idx changes to prevent data leakage 
-    between regions in the concatenated time series.
+    CRITICAL: Resets adstock to 0 when territory_idx changes.
     
     Args:
         x: Spend tensor (n_obs, n_channels)
@@ -120,32 +165,20 @@ def geometric_adstock_pytensor(
         Adstocked tensor (n_obs, n_channels)
     """
     def step(x_t, territory_t, adstock_prev, territory_prev, alpha_t):
-        # If territory changes, previous adstock contributes 0 to current step
-        # Soft switch using multiplication mask
-        # Territory indices are integers - check equality
-        
-        # 1.0 if same territory, 0.0 if different
+        # 1 if same territory, 0 if different
         is_same = pt.eq(territory_t, territory_prev)
         
         # Calculate carryover
         carryover = alpha_t * adstock_prev
         
-        # Apply mask: if different territory, carryover becomes 0
-        qs = pt.switch(is_same, carryover, 0.0)
+        # if different territory, carryover becomes 0
+        qs = pt.switch(is_same, carryover, 0)
         
         return x_t + qs, territory_t
     
     init_adstock = pt.zeros_like(x[0])
     
-    # NOTE: territory_idx needs to be shifted by 1 to align "prev" in scan
-    # Scan outputs (adstock_curr, territory_curr) to track state.
-    
-    # Initial state: adstock=zeros, territory_idx=-1 (impossible index)
-    # Cast to matches territory_idx dtype (usually int32 or int64)
     init_territory = pt.as_tensor(-1, dtype="int32")
-    
-    # Scan sequences: x and territory_idx and alpha (if time-varying, but here alpha is usually static per group)
-    # If alpha is (n_obs, n_channels), include it in sequences.
     
     result, _ = pytensor.scan(
         fn=step,
@@ -180,7 +213,7 @@ def hill_saturation_pytensor(
         Saturated tensor (n_obs, n_channels), values in [0, 1]
     """
     # Add small epsilon to avoid division by zero
-    eps = 1e-8
+    eps = EPSILON
     x_safe = pt.maximum(x, eps)
     L_safe = pt.maximum(L, eps)
     
@@ -190,7 +223,6 @@ def hill_saturation_pytensor(
 # =============================================================================
 # Model Builder
 # =============================================================================
-
 
 def build_hierarchical_mmm(
     X_spend: "NDArray",
@@ -202,45 +234,19 @@ def build_hierarchical_mmm(
     l_max: int | None = None,
     channel_names: list[str] | None = None,
     feature_names: list[str] | None = None,
-    use_student_t: bool | None = None,
 ) -> pm.Model:
-    """
-    Build hierarchical MMM with Bayesian adstock and saturation.
-    
-    All hyperparameters are imported from src.config.
-    """
-    from src.config import (
-        L_MAX,
-        PRIOR_ADSTOCK_ALPHA,
-        PRIOR_ADSTOCK_BETA,
-        PRIOR_SIGMA_ADSTOCK_TERRITORY,
-        PRIOR_SATURATION_L_SIGMA,
-        PRIOR_SATURATION_K_ALPHA,
-        PRIOR_SATURATION_K_BETA,
-        PRIOR_SIGMA_SATURATION_TERRITORY,
-        PRIOR_SIGMA_TERRITORY,
-        PRIOR_BETA_CHANNEL_SIGMA,
-        PRIOR_SIGMA_BETA_TERRITORY,
-        PRIOR_HORSESHOE_M0,
-        PRIOR_HORSESHOE_LAMBDA_BETA,
-        PRIOR_GAMMA_SEASON_SIGMA,
-        PRIOR_SIGMA_OBS,
-        USE_STUDENT_T,
-        PRIOR_NU_ALPHA,
-        PRIOR_NU_BETA,
-    )
-    
+    """Build hierarchical MMM with Bayesian adstock and saturation."""
     # Use config defaults if not provided
-    l_max = l_max or L_MAX
-    use_student_t = use_student_t if use_student_t is not None else USE_STUDENT_T
+    l_max = l_max if l_max is not None else L_MAX
     
     n_obs = len(y)
     n_channels = X_spend.shape[1]
     n_features = X_features.shape[1]
     n_season = X_season.shape[1]
     
-    # Validate inputs
-    assert len(territory_idx) == n_obs, "territory_idx length mismatch"
+    # Validate inputs (fail fast)
+    if len(territory_idx) != n_obs:
+        raise ValueError(f"territory_idx length ({len(territory_idx)}) != n_obs ({n_obs})")
     
     coords = {
         "territory": list(range(n_territories)),
@@ -252,7 +258,7 @@ def build_hierarchical_mmm(
     
     with pm.Model(coords=coords) as model:
         # ============================================
-        # DATA CONTAINERS (pm.Data is mutable by default in PyMC 5.24+)
+        # DATA CONTAINERS (pm.Data allows updating for prediction)
         # ============================================
         
         X_spend_data = pm.Data("X_spend", X_spend)
@@ -262,7 +268,14 @@ def build_hierarchical_mmm(
         y_obs_data = pm.Data("y_obs_data", y)
         
         # ============================================
-        # BAYESIAN ADSTOCK (Learned alpha)
+        # BAYESIAN ADSTOCK (carryover effect)
+        # ============================================
+        # adstock[t] = spend[t] + alpha * adstock[t-1]
+        # Non-centered parameterization: alpha_territory = alpha_channel + alpha_territory_raw × sigma_alpha
+        # Improves MCMC sampling (Betancourt & Girolami, 2013: arXiv:1312.0906)
+        # alpha_channel ~ Beta(2,2) centers alpha at 0.5 (moderate carryover)
+        # alpha_territory_raw ~ Normal(0,1)
+        # sigma_alpha ~ HalfNormal(0,1)
         # ============================================
         
         alpha_channel = pm.Beta(
@@ -272,29 +285,28 @@ def build_hierarchical_mmm(
             dims="channel",
         )
         
-        sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=PRIOR_SIGMA_ADSTOCK_TERRITORY)
         alpha_territory_raw = pm.Normal(
             "alpha_territory_raw",
             mu=0,
             sigma=1,
             dims=("territory", "channel"),
-        )
+        )        
+        sigma_alpha = pm.HalfNormal("sigma_alpha", sigma=PRIOR_SIGMA_ADSTOCK_TERRITORY)
         
         alpha_territory = pm.Deterministic(
             "alpha_territory",
             pt.clip(
                 alpha_channel + alpha_territory_raw * sigma_alpha,
-                0.01,
-                0.99,
+                ADSTOCK_CLIP_MIN,
+                ADSTOCK_CLIP_MAX,
             ),
             dims=("territory", "channel"),
         )
         
-        # PROJECT alpha to observation level
-        # (n_obs, n_channels)
+        # Replicates alpha to observation level (n_obs, n_channels)
         alpha_obs = alpha_territory[territory_idx_data]
         
-        # CORRECTED: Adstock with territory-awareness
+        # Adstock with territory-awareness
         X_adstock = geometric_adstock_pytensor(
             x=X_spend_data,
             alpha=alpha_obs,
@@ -302,61 +314,70 @@ def build_hierarchical_mmm(
         )
         
         # ============================================
-        # BAYESIAN SATURATION (Learned L, k)
+        # BAYESIAN SATURATION (diminishing returns)
+        # ============================================
+        # Hill function: x^k / (L^k + x^k)
+        # Non-centered parameterization: L_territory = L_channel + L_territory_raw × sigma_L
+        # Improves MCMC sampling (Betancourt & Girolami, 2013: arXiv:1312.0906)
+        # L_channel ~ HalfNormal(0,1)
+        # L_territory_raw ~ Normal(0,1)
+        # sigma_L ~ HalfNormal(0,1)
+        # Learned params: L = half-saturation point, k = steepness
         # ============================================
         
-        # M2: Use proper HalfNormal instead of folded Normal
         L_channel = pm.HalfNormal(
             "L_channel",
             sigma=PRIOR_SATURATION_L_SIGMA,
             dims="channel",
         )
         
-        # Steepness parameter using config priors
-        k_channel = pm.Gamma(
-            "k_channel",
-            alpha=PRIOR_SATURATION_K_ALPHA,
-            beta=PRIOR_SATURATION_K_BETA,
-            dims="channel",
-        )
-        
-        sigma_L = pm.HalfNormal("sigma_L", sigma=PRIOR_SIGMA_SATURATION_TERRITORY)
         L_territory_raw = pm.Normal(
             "L_territory_raw",
             mu=0,
             sigma=1,
             dims=("territory", "channel"),
         )
+        sigma_L = pm.HalfNormal("sigma_L", sigma=PRIOR_SIGMA_SATURATION_TERRITORY)
         
-        # M3: Use softplus for smooth gradients instead of abs()
+        # Use softplus for smooth gradients instead of abs()
         L_territory = pm.Deterministic(
             "L_territory",
             pt.softplus(L_channel + L_territory_raw * sigma_L),
             dims=("territory", "channel"),
         )
         
-        # PROJECT L to observation level
+        # Replicates L to observation level
         L_obs = L_territory[territory_idx_data]
         
-        # NOTE: k (shape parameter) is keeping as pooled/global for stability, 
-        # unless specifically asked to be hierarchical. 
-        # But L (scale) varies by territory.
-        
-        # CORRECTED: Use territory-specific L
+
+        # k is keeping as pooled/global for stability. L varies by territory.
+        # k > 1: S-shaped curve, k = 1: Michaelis-Menten
+        # Jin et al. (2017) https://research.google/pubs/pub46001/
+        k_channel = pm.Gamma(
+            "k_channel",
+            alpha=PRIOR_SATURATION_K_ALPHA,
+            beta=PRIOR_SATURATION_K_BETA,
+            dims="channel",
+        )
+
         X_saturated = hill_saturation_pytensor(X_adstock, L_obs, k_channel)
-        
+
         # ============================================
-        # HIERARCHICAL INTERCEPTS (2 levels: Global → Territory)
-        # Currency level removed - each territory belongs to one currency
-        # so territory intercepts absorb the currency effect directly
+        # HIERARCHICAL INTERCEPTS (Global + Territory)
+        # ============================================
+        # Global Intercept: alpha_global ~ N(0,1)
+        # Territory Intercept: alpha_territory_int = alpha_global + alpha_territory_int_raw * sigma_territory_int
+        # alpha_territory_int_raw ~ N(0,1)
+        # sigma_territory_int ~ HalfNormal(0,1)
         # ============================================
         
         alpha_global = pm.Normal("alpha_global", mu=0, sigma=1)
         
-        sigma_territory_int = pm.HalfNormal("sigma_territory_int", sigma=PRIOR_SIGMA_TERRITORY)
         alpha_territory_int_raw = pm.Normal(
             "alpha_territory_int_raw", mu=0, sigma=1, dims="territory"
         )
+        sigma_territory_int = pm.HalfNormal("sigma_territory_int", sigma=PRIOR_SIGMA_TERRITORY)
+
         alpha_territory_int = pm.Deterministic(
             "alpha_territory_int",
             alpha_global + alpha_territory_int_raw * sigma_territory_int,
@@ -364,7 +385,12 @@ def build_hierarchical_mmm(
         )
         
         # ============================================
-        # CHANNEL EFFECTS (Global + Territory Deviation)
+        # CHANNEL EFFECTS (Global + Territory)
+        # Channel effects: beta_eff = beta_channel + beta_channel_territory[t]
+        # Global effects: beta_channel ~ HalfNormal(0,1)
+        # Territory effects: beta_channel_territory[t] = beta_channel_territory_raw[t] * sigma_beta_t
+        # beta_channel_territory_raw[t] ~ N(0,1)
+        # sigma_beta_t ~ HalfNormal(0,1)
         # ============================================
         
         beta_channel = pm.HalfNormal(
@@ -373,13 +399,14 @@ def build_hierarchical_mmm(
             dims="channel",
         )
         
-        sigma_beta_t = pm.HalfNormal("sigma_beta_t", sigma=PRIOR_SIGMA_BETA_TERRITORY)
         beta_channel_territory_raw = pm.Normal(
             "beta_channel_territory_raw",
             mu=0,
             sigma=1,
             dims=("territory", "channel"),
         )
+        sigma_beta_t = pm.HalfNormal("sigma_beta_t", sigma=PRIOR_SIGMA_BETA_TERRITORY)
+        
         beta_channel_territory = pm.Deterministic(
             "beta_channel_territory",
             beta_channel_territory_raw * sigma_beta_t,
@@ -387,27 +414,30 @@ def build_hierarchical_mmm(
         )
         
         territory_betas = beta_channel + beta_channel_territory[territory_idx_data]
+
         channel_effect = pm.math.sum(territory_betas * X_saturated, axis=1)
         
         # ============================================
-        # FEATURE EFFECTS (Regularized Horseshoe - Piironen & Vehtari, 2017)
+        # FEATURE EFFECTS (Regularized Horseshoe - Piironen & Vehtari, 2017: arXiv:1707.01694)
+        # ============================================
+        # Global shrinkage scale based on expected sparsity
+        # Piironen & Vehtari (2017): τ₀ = p₀/(p-p₀) × 1/√n
         # ============================================
         
-        # Global shrinkage scale based on expected sparsity
         m0 = PRIOR_HORSESHOE_M0  # Expected number of relevant features
         D = n_features
-        # Piironen & Vehtari (2017): τ₀ = p₀/(p-p₀) × 1/√n
+        
         tau0 = m0 / (D - m0 + 1e-8) / np.sqrt(n_obs)
         
-        # Using HalfStudentT instead of HalfCauchy for numerical stability
-        # HalfStudentT(nu=3) has less extreme tails than HalfCauchy
-        tau = pm.HalfStudentT("tau", nu=3, sigma=max(tau0, 0.01))
+        # HalfStudentT(nu=3) instead of HalfCauchy for numerical stability
+        # Stan Prior Choice Wiki https://github.com/stan-dev/stan/wiki/Prior-Choice-Recommendations#prior-for-scale-parameters-in-hierarchical-models
+        tau = pm.HalfStudentT("tau", nu=PRIOR_HORSESHOE_NU, sigma=max(tau0, 0.01))
         
         # Slab variance for regularization (prevents extreme shrinkage)
-        c2 = pm.InverseGamma("c2", alpha=2, beta=1)
+        c2 = pm.InverseGamma("c2", alpha=PRIOR_HORSESHOE_C2_ALPHA, beta=PRIOR_HORSESHOE_C2_BETA)
         
         # Local shrinkage per feature (also using HalfStudentT for stability)
-        lambda_f = pm.HalfStudentT("lambda_f", nu=3, sigma=PRIOR_HORSESHOE_LAMBDA_BETA, dims="feature")
+        lambda_f = pm.HalfStudentT("lambda_f", nu=PRIOR_HORSESHOE_NU, sigma=PRIOR_HORSESHOE_LAMBDA_BETA, dims="feature")
         
         # Regularized shrinkage (Finnish Horseshoe)
         lambda_tilde = pm.Deterministic(
@@ -442,7 +472,7 @@ def build_hierarchical_mmm(
         # ============================================
         
         mu = (
-            alpha_territory_int[territory_idx_data]  # Includes alpha_global (see L366-368)
+            alpha_territory_int[territory_idx_data]  # Includes alpha_global
             + channel_effect
             + feature_effect
             + season_effect
@@ -450,22 +480,18 @@ def build_hierarchical_mmm(
         
         sigma_obs = pm.HalfNormal("sigma_obs", sigma=PRIOR_SIGMA_OBS)
         
-        if use_student_t:
-            nu = pm.Gamma("nu", alpha=PRIOR_NU_ALPHA, beta=PRIOR_NU_BETA)
-            pm.StudentT(
-                "y_obs",
-                mu=mu,
-                sigma=sigma_obs,
-                nu=nu,
-                observed=y_obs_data,
-            )
-        else:
-            pm.Normal(
-                "y_obs",
-                mu=mu,
-                sigma=sigma_obs,
-                observed=y_obs_data,
-            )
+        # Student-T likelihood for robust regression
+        # Robust to outliers common in marketing data (Black Friday spikes, tracking errors)
+        # Gelman et al., 2013. Bayesian Data Analysis (3rd ed.), Ch.17. https://sites.stat.columbia.edu/gelman/book/BDA3.pdf
+        # Jylänki et al., 2011. Robust Gaussian Process Regression with a Student-t Likelihood. https://jmlr.org/papers/v12/jylanki11a.html
+        nu = pm.Gamma("nu", alpha=PRIOR_NU_ALPHA, beta=PRIOR_NU_BETA)
+        pm.StudentT(
+            "y_obs",
+            mu=mu,
+            sigma=sigma_obs,
+            nu=nu,
+            observed=y_obs_data,
+        )
     
     return model
 
@@ -483,7 +509,7 @@ def fit_model(
     target_accept: float | None = None,
     max_treedepth: int | None = None,
     sampler: str | None = None,
-    random_seed: int = 1991,
+    random_seed: int | None = None,
 ) -> az.InferenceData:
     """
     Fit model using NUTS sampler.
@@ -498,26 +524,18 @@ def fit_model(
         target_accept: Target acceptance rate
         max_treedepth: Maximum tree depth for NUTS
         sampler: Sampler to use ("pymc" or "numpyro")
-        random_seed: Random seed
+        random_seed: Random seed (defaults to SEED from config)
     
     Returns:
         ArviZ InferenceData with posterior samples
     """
-    from src.config import (
-        MCMC_CHAINS,
-        MCMC_DRAWS,
-        MCMC_TUNE,
-        MCMC_TARGET_ACCEPT,
-        MCMC_MAX_TREEDEPTH,
-        MCMC_SAMPLER,
-    )
-    
     draws = draws if draws is not None else MCMC_DRAWS
     tune = tune if tune is not None else MCMC_TUNE
     chains = chains if chains is not None else MCMC_CHAINS
     target_accept = target_accept if target_accept is not None else MCMC_TARGET_ACCEPT
     max_treedepth = max_treedepth if max_treedepth is not None else MCMC_MAX_TREEDEPTH
     sampler = sampler if sampler is not None else MCMC_SAMPLER
+    random_seed = random_seed if random_seed is not None else SEED
     
     with model:
         sampler_kwargs = {}
@@ -654,6 +672,55 @@ def evaluate(
 # =============================================================================
 
 
+def _compute_contributions_array(
+    X_spend: "NDArray",
+    alpha_territory: "NDArray",
+    L_territory: "NDArray",
+    k_channel: "NDArray",
+    beta_channel: "NDArray",
+    beta_territory: "NDArray",
+    territory_idx: "NDArray",
+) -> "NDArray":
+    """
+    Apply adstock → saturation → beta transforms for all channels.
+    
+    Consolidates duplicate loop logic used by both compute_channel_contributions
+    and compute_roi_with_hdi.
+    
+    Args:
+        X_spend: Raw spend array (n_obs, n_channels)
+        alpha_territory: Adstock decay per territory (n_territories, n_channels)
+        L_territory: Saturation scale per territory (n_territories, n_channels)
+        k_channel: Saturation steepness per channel (n_channels,)
+        beta_channel: Global channel effects (n_channels,)
+        beta_territory: Territory deviations (n_territories, n_channels)
+        territory_idx: Territory index per observation (n_obs,)
+    
+    Returns:
+        Contributions array (n_obs, n_channels)
+    """
+    n_obs, n_channels = X_spend.shape
+    contributions = np.zeros((n_obs, n_channels))
+    
+    for c in range(n_channels):
+        # Apply territory-aware adstock
+        x_adstock = geometric_adstock_numpy(
+            X_spend[:, c],
+            alpha_territory[:, c],
+            territory_idx,
+        )
+        
+        # Apply saturation with territory-specific L and global k
+        L_obs = L_territory[territory_idx, c]
+        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
+        
+        # Compute contribution with territory-specific beta
+        beta_eff = beta_channel[c] + beta_territory[territory_idx, c]
+        contributions[:, c] = beta_eff * x_sat
+    
+    return contributions
+
+
 def compute_channel_contributions(
     idata: az.InferenceData,
     X_spend: "NDArray",
@@ -687,26 +754,11 @@ def compute_channel_contributions(
     alpha_channel = idata.posterior["alpha_channel"].mean(dim=["chain", "draw"]).values
     L_channel = idata.posterior["L_channel"].mean(dim=["chain", "draw"]).values
     
-    n_obs, n_channels = X_spend.shape
-    contributions = np.zeros((n_obs, n_channels))
-    
-    # Apply transformations per channel using NumPy helpers
-    for c in range(n_channels):
-        # Apply territory-aware adstock
-        x_adstock = geometric_adstock_numpy(
-            X_spend[:, c],
-            alpha_territory[:, c],
-            territory_idx,
-        )
-        
-        # Apply saturation with territory-specific L and global k
-        L_obs = L_territory[territory_idx, c]
-        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
-        
-        # Compute contribution with territory-specific beta
-        for t in range(n_obs):
-            t_idx = territory_idx[t]
-            contributions[t, c] = (beta_channel[c] + beta_territory[t_idx, c]) * x_sat[t]
+    # Apply transforms using consolidated helper
+    contributions = _compute_contributions_array(
+        X_spend, alpha_territory, L_territory, k_channel,
+        beta_channel, beta_territory, territory_idx,
+    )
     
     # Aggregate per channel
     total_contributions = contributions.sum(axis=0)
@@ -720,7 +772,7 @@ def compute_channel_contributions(
         "k_saturation": k_channel,
         "total_spend": total_spend,
         "contribution": total_contributions,
-        "roi": total_contributions / (total_spend + 1e-8),
+        "roi": total_contributions / (total_spend + EPSILON),
     })
 
 
@@ -735,8 +787,7 @@ def compute_roi_with_hdi(
     """
     Compute ROI with uncertainty intervals using posterior samples.
     
-    Unlike compute_channel_contributions (which uses posterior means),
-    this function samples from the posterior to provide HDI intervals.
+    The function samples from the posterior to provide HDI intervals.
     
     Args:
         idata: ArviZ InferenceData with posterior samples
@@ -792,7 +843,7 @@ def compute_roi_with_hdi(
                 contributions[c] += beta_eff * x_sat[t]
         
         # ROI for this sample
-        roi_samples[s_i, :] = contributions / (total_spend + 1e-8)
+        roi_samples[s_i, :] = contributions / (total_spend + EPSILON)
     
     # Compute statistics
     roi_mean = roi_samples.mean(axis=0)
@@ -872,5 +923,209 @@ def compute_channel_contributions_by_territory(
                 "roi": float(contrib / (spend + 1e-8)),
                 "n_obs": int(obs_by_terr[t_idx]),
             })
+    
+    return pd.DataFrame(results)
+
+
+def compute_marginal_roas_custom(
+    model: pm.Model,
+    idata: az.InferenceData,
+    X_spend: "NDArray",
+    X_features: "NDArray",
+    X_season: "NDArray",
+    territory_idx: "NDArray",
+    y_base: "NDArray",
+    channel_names: list[str],
+    spend_increases: list[float] | None = None,
+    scaling_factor: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Compute marginal ROAS at different spend levels for the custom hierarchical model.
+    
+    For each channel, simulates increasing spend by different percentages
+    and measures the marginal return on each additional dollar spent.
+    
+    Args:
+        model: PyMC model with mutable data
+        idata: Fitted InferenceData
+        X_spend: Baseline spend array (n_obs, n_channels)
+        X_features: Features array (n_obs, n_features)
+        X_season: Seasonality array (n_obs, n_season)
+        territory_idx: Territory index for each observation (n_obs,)
+        y_base: Baseline y values for prediction (n_obs,)
+        channel_names: List of channel names
+        spend_increases: Percentage increases to test (default: [0, 10, 25, 50, 100])
+        scaling_factor: Factor to convert log-scale predictions to linear revenue
+    
+    Returns:
+        DataFrame with columns: channel, spend_increase_pct, marginal_roas
+    """
+    if spend_increases is None:
+        spend_increases = [0, 10, 25, 50, 100]
+    
+    n_obs, n_channels = X_spend.shape
+    results = []
+    
+    # Get baseline prediction
+    with model:
+        pm.set_data({
+            "X_spend": X_spend,
+            "X_features": X_features,
+            "X_season": X_season,
+            "territory_idx": territory_idx,
+            "y_obs_data": y_base,
+        })
+        ppc_base = pm.sample_posterior_predictive(idata, predictions=True, 
+                                                   random_seed=42, progressbar=False)
+        y_pred_base = ppc_base.predictions["y_obs"].mean(dim=["chain", "draw"]).values
+    
+    base_revenue = np.expm1(y_pred_base).sum() * scaling_factor
+    
+    for c_idx, channel in enumerate(channel_names):
+        base_spend = X_spend[:, c_idx].sum()
+        
+        for pct in spend_increases:
+            if pct == 0:
+                results.append({
+                    "channel": channel,
+                    "spend_increase_pct": pct,
+                    "marginal_roas": 0.0,
+                })
+                continue
+            
+            # Modify spend for this channel
+            X_spend_modified = X_spend.copy()
+            X_spend_modified[:, c_idx] = X_spend[:, c_idx] * (1 + pct / 100)
+            
+            new_spend = X_spend_modified[:, c_idx].sum()
+            delta_spend = new_spend - base_spend
+            
+            # Predict with modified spend
+            with model:
+                pm.set_data({
+                    "X_spend": X_spend_modified,
+                    "X_features": X_features,
+                    "X_season": X_season,
+                    "territory_idx": territory_idx,
+                    "y_obs_data": y_base,
+                })
+                ppc_new = pm.sample_posterior_predictive(idata, predictions=True,
+                                                          random_seed=42, progressbar=False)
+                y_pred_new = ppc_new.predictions["y_obs"].mean(dim=["chain", "draw"]).values
+            
+            new_revenue = np.expm1(y_pred_new).sum() * scaling_factor
+            delta_revenue = new_revenue - base_revenue
+            
+            marginal_roas = delta_revenue / delta_spend if delta_spend > 0 else 0.0
+            
+            results.append({
+                "channel": channel,
+                "spend_increase_pct": pct,
+                "marginal_roas": float(marginal_roas),
+            })
+    
+    return pd.DataFrame(results)
+
+
+def compute_marginal_roas_by_territory(
+    model: pm.Model,
+    idata: az.InferenceData,
+    X_spend: "NDArray",
+    X_features: "NDArray",
+    X_season: "NDArray",
+    territory_idx: "NDArray",
+    y_base: "NDArray",
+    channel_names: list[str],
+    territory_names: list[str],
+    spend_increases: list[float] | None = None,
+    scaling_factor: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Compute marginal ROAS at different spend levels BY TERRITORY.
+    
+    For each territory and channel, simulates increasing spend and measures
+    the marginal return, respecting the hierarchical model structure.
+    
+    Args:
+        model: PyMC model with mutable data
+        idata: Fitted InferenceData
+        X_spend: Baseline spend array (n_obs, n_channels)
+        X_features: Features array (n_obs, n_features)
+        X_season: Seasonality array (n_obs, n_season)
+        territory_idx: Territory index for each observation (n_obs,)
+        y_base: Baseline y values for prediction (n_obs,)
+        channel_names: List of channel names
+        territory_names: List of territory names
+        spend_increases: Percentage increases to test (default: [10, 25, 50])
+        scaling_factor: Factor to convert log-scale predictions to linear revenue
+    
+    Returns:
+        DataFrame with columns: territory, channel, spend_increase_pct, marginal_roas
+    """
+    if spend_increases is None:
+        spend_increases = [10, 25, 50]  # Fewer levels for territory to reduce computation
+    
+    n_obs, n_channels = X_spend.shape
+    n_territories = len(territory_names)
+    results = []
+    
+    # Get baseline prediction (full model)
+    with model:
+        pm.set_data({
+            "X_spend": X_spend,
+            "X_features": X_features,
+            "X_season": X_season,
+            "territory_idx": territory_idx,
+            "y_obs_data": y_base,
+        })
+        ppc_base = pm.sample_posterior_predictive(idata, predictions=True, 
+                                                   random_seed=42, progressbar=False)
+        y_pred_base = ppc_base.predictions["y_obs"].mean(dim=["chain", "draw"]).values
+    
+    # Compute baseline revenue per territory
+    base_revenue_by_territory = {}
+    for t_idx, territory in enumerate(territory_names):
+        mask = (territory_idx == t_idx)
+        base_revenue_by_territory[territory] = np.expm1(y_pred_base[mask]).sum() * scaling_factor
+    
+    for c_idx, channel in enumerate(channel_names):
+        for pct in spend_increases:
+            # Modify spend for this channel
+            X_spend_modified = X_spend.copy()
+            X_spend_modified[:, c_idx] = X_spend[:, c_idx] * (1 + pct / 100)
+            
+            # Predict with modified spend
+            with model:
+                pm.set_data({
+                    "X_spend": X_spend_modified,
+                    "X_features": X_features,
+                    "X_season": X_season,
+                    "territory_idx": territory_idx,
+                    "y_obs_data": y_base,
+                })
+                ppc_new = pm.sample_posterior_predictive(idata, predictions=True,
+                                                          random_seed=42, progressbar=False)
+                y_pred_new = ppc_new.predictions["y_obs"].mean(dim=["chain", "draw"]).values
+            
+            # Compute territory-level marginal ROAS
+            for t_idx, territory in enumerate(territory_names):
+                mask = (territory_idx == t_idx)
+                
+                base_spend_territory = X_spend[mask, c_idx].sum()
+                new_spend_territory = X_spend_modified[mask, c_idx].sum()
+                delta_spend = new_spend_territory - base_spend_territory
+                
+                base_revenue = base_revenue_by_territory[territory]
+                new_revenue = np.expm1(y_pred_new[mask]).sum() * scaling_factor
+                delta_revenue = new_revenue - base_revenue
+                
+                marginal_roas = delta_revenue / delta_spend if delta_spend > 0 else 0.0
+                
+                results.append({
+                    "territory": territory,
+                    "channel": channel,
+                    "spend_increase_pct": pct,
+                    "marginal_roas": float(marginal_roas),
+                })
     
     return pd.DataFrame(results)

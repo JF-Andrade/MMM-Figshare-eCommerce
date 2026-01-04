@@ -7,15 +7,23 @@ Implements transformations:
 - Calendar features
 - Seasonality (Fourier terms)
 - Missing value imputation
+
+ORGANIZATION:
+1. Core Math Transformations (Shared Logic)
+2. Feature Engineering Utilities (Shared Logic)
+3. Data Preparation Pipelines (Shared Logic)
+4. Baseline Model Specific Functions
+5. Hierarchical Model Specific Functions
 """
 
 from __future__ import annotations
-
 from typing import TYPE_CHECKING
-
 import holidays
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from typing import Any
+from sklearn.preprocessing import StandardScaler
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -41,11 +49,21 @@ from src.config import (
     TRAFFIC_COLS,
     CONTROL_COLS,
     SEASON_COLS,
+    L_MAX,
+    HOLDOUT_WEEKS,
+    MLFLOW_TRACKING_URI,
+    MLFLOW_EXPERIMENT_NAME,
+    PROJECT_ROOT,
+    ALL_FEATURES,
+    EPSILON,
 )
 
 
 # =============================================================================
-# 1. CORE MATH TRANSFORMATIONS (Low-Level)
+# 1. CORE MATH TRANSFORMATIONS (Shared Logic)
+# 
+# Used by: Baseline & Hierarchical
+# Purpose: Low-level mathematical operations (log, adstock, saturation).
 # =============================================================================
 
 
@@ -141,7 +159,10 @@ def apply_saturation_with_max(
 
 
 # =============================================================================
-# 2. FEATURE ENGINEERING UTILITIES (Mid-Level)
+# 2. FEATURE ENGINEERING UTILITIES (Shared Logic)
+# 
+# Used by: Baseline & Hierarchical
+# Purpose: Helpers for cleaning, imputation, and feature generation.
 # =============================================================================
 
 
@@ -318,8 +339,46 @@ def add_event_features(
     return df
 
 
+def normalize_spend_by_currency(
+    df: pd.DataFrame,
+    spend_cols: list[str],
+    currency_col: str = RAW_CURRENCY_COL,
+) -> pd.DataFrame:
+    """
+    Normalize spend features within each currency (0-1 scaling).
+    
+    Prevents scale issues when combining territories with different currencies.
+    """
+    df = df.copy()
+    
+    for col in spend_cols:
+        df[f"{col}_norm"] = df.groupby(currency_col)[col].transform(
+            lambda x: x / (x.max() + 1e-8)
+        )
+    
+    return df
+
+
+def create_hierarchy_indices(
+    df: pd.DataFrame,
+    geo_col: str = GEO_COL,
+) -> tuple["NDArray", list[str]]:
+    """
+    Create integer indices for hierarchical model.
+    """
+    # Territory indexing
+    territory_cat = pd.Categorical(df[geo_col])
+    territory_idx = territory_cat.codes
+    territory_names = territory_cat.categories.tolist()
+    
+    return territory_idx, territory_names
+
+
 # =============================================================================
-# 3. PIPELINE PREPARATION (High-Level)
+# 3. DATA PREPARATION PIPELINES (Shared Logic)
+# 
+# Used by: Baseline & Hierarchical
+# Purpose: High-level data aggregation and transformation pipelines.
 # =============================================================================
 
 
@@ -398,6 +457,14 @@ def prepare_weekly_data(
                 df_weekly[f"{col}_norm"] = df_weekly[col] / max_val
 
     return df_weekly
+
+
+# =============================================================================
+# 4. BASELINE MODEL SPECIFIC
+# 
+# Used by: Ridge Regression (mmm_baseline.py)
+# Purpose: Feature generation specific to simple regression models.
+# =============================================================================
 
 
 def prepare_baseline_features(
@@ -508,40 +575,245 @@ def prepare_baseline_features(
     return X, y, channels_filtered, y_mean, channel_max_dict, other_spend_sources
 
 
-def normalize_spend_by_currency(
-    df: pd.DataFrame,
-    spend_cols: list[str],
-    currency_col: str = RAW_CURRENCY_COL,
-) -> pd.DataFrame:
-    """
-    Normalize spend features within each currency (0-1 scaling).
-    
-    Prevents scale issues when combining territories with different currencies.
-    """
-    df = df.copy()
-    
-    for col in spend_cols:
-        df[f"{col}_norm"] = df.groupby(currency_col)[col].transform(
-            lambda x: x / (x.max() + 1e-8)
-        )
-    
-    return df
+# =============================================================================
+# 5. HIERARCHICAL MODEL SPECIFIC
+# 
+# Used by: Bayesian Hierarchical Model (mmm_hierarchical.py)
+# Purpose: Panel data preparation and tensor creation for PyMC.
+# =============================================================================
 
 
-def create_hierarchy_indices(
+def get_panel_holdout_indices(
     df: pd.DataFrame,
-    geo_col: str = GEO_COL,
-) -> tuple["NDArray", list[str]]:
+    geo_col: str,
+    date_col: str,
+    holdout_size: int,
+) -> tuple[list[int], list[int]]:
     """
-    Create integer indices for hierarchical model.
+    Get train/test indices for panel data holdout split.
+    
+    CRITICAL: This function explicitly sorts data by Territory and Date 
+    to prevent temporal leakage (training on future data).
+
+    Note: Currently used primarily by the Hierarchical Model (mmm_hierarchical.py)
+    to handle correct splitting of stacked panel data. Baseline models typically
+    use standard TimeSeriesSplit on per-region data.
+    
+    Args:
+        df: Panel DataFrame.
+        geo_col: Column name for territory.
+        date_col: Column name for date (required for safe sorting).
+        holdout_size: Rows per territory for test.
     
     Returns:
-        territory_idx: Territory index for each observation (n_obs,)
-        territory_names: List of territory names
-    """
-    # Territory indexing
-    territory_cat = pd.Categorical(df[geo_col])
-    territory_idx = territory_cat.codes
-    territory_names = territory_cat.categories.tolist()
+        (train_indices, test_indices)
     
-    return territory_idx, territory_names
+    Raises:
+        ValueError: If a territory has insufficient data for the split.
+    """
+    # 1. FAIL SAFE: Force sort to guarantee chronological order
+    # Using 'kind="stable"' to preserve existing order if already sorted
+    df_sorted = df.sort_values(by=[geo_col, date_col], ascending=[True, True])
+    
+    train_indices = []
+    test_indices = []
+    
+    for territory in df_sorted[geo_col].unique():
+        mask = df_sorted[geo_col] == territory
+        positions = df_sorted.index[mask].tolist()
+        n_obs = len(positions)
+        
+        # 2. FAIL FAST: Check for data sufficiency
+        if n_obs <= holdout_size:
+            raise ValueError(
+                f"Territory '{territory}' has {n_obs} observations, but holdout_size is {holdout_size}. "
+                "Cannot perform valid train/test split."
+            )
+            
+        train_indices.extend(positions[:-holdout_size])
+        test_indices.extend(positions[-holdout_size:])
+    
+    return train_indices, test_indices
+
+
+def prepare_hierarchical_data(
+    df: pd.DataFrame,
+    regions: list[str],
+) -> tuple[pd.DataFrame, dict]:
+
+    # 1. Prepare weekly data per region
+    all_data = []
+    for region in regions:
+        df_weekly = prepare_weekly_data(df, region=region)
+        df_weekly[GEO_COL] = region
+        # Add currency from original data to normalize spend by currency
+        currency = df[df['TERRITORY_NAME'] == region]['CURRENCY_CODE'].iloc[0]
+        df_weekly['CURRENCY_CODE'] = currency
+        all_data.append(df_weekly)
+
+    df_combined = pd.concat(all_data, ignore_index=True)
+
+    # 2. Add trend per region (normalized)
+    for region in regions:
+        mask = df_combined[GEO_COL] == region
+        df_combined.loc[mask, "trend"] = np.arange(mask.sum()) / (mask.sum() + 1)
+
+    # 3. Log-transform target
+    df_combined['y_log'] = np.log1p(df_combined[TARGET_COL])
+
+    # 4. Ensure consistent sorting before generating indices
+    df_combined = df_combined.sort_values([GEO_COL, DATE_COL]).reset_index(drop=True)
+    
+    for geo in df_combined[GEO_COL].unique():
+        geo_dates = df_combined.loc[df_combined[GEO_COL] == geo, DATE_COL]
+        if not geo_dates.is_monotonic_increasing:
+            raise ValueError(
+                f"Dates not monotonic for territory {geo}. "
+                "Adstock computation requires sorted data."
+            )
+
+    # 5. Create hierarchy indices (Global → Territory)
+    territory_idx, territory_names = create_hierarchy_indices(df_combined, geo_col=GEO_COL)
+
+    indices = {
+        "territory_idx": territory_idx,
+        "territory_names": territory_names,
+    }
+
+    print(f"Combined data: {len(df_combined)} rows, {len(regions)} regions")
+    print(f"DataFrame columns: {len(df_combined.columns)} (includes raw/intermediate cols)")
+    print(f"Hierarchy: {len(territory_names)} territories")
+
+    return df_combined, indices
+
+
+def prepare_model_data(
+    df: pd.DataFrame,
+    indices: dict,
+    train_indices: list[int] | None = None,
+    test_indices: list[int] | None = None,
+) -> dict[str, Any]:
+    """
+    Split data temporally and prepare X/y for Bayesian model.
+    
+    If train_indices/test_indices provided, use them (for CV).
+    Otherwise, fall back to HOLDOUT_WEEKS split (backward compatibility).
+    
+    Spend normalization happens AFTER split,
+    fitting max on train only to prevent data leakage.
+    """
+    
+    # Seasonality Cyclic terms
+    season_cols = [c for c in SEASON_COLS if c in df.columns]
+    
+    # All other features (Traffic, Controls - NOT spend or season)
+    excluded = [TARGET_COL, "y_log", DATE_COL, GEO_COL, "CURRENCY_CODE"] + season_cols + SPEND_COLS
+    other_feature_cols = [c for c in df.columns if c in ALL_FEATURES and c not in excluded]
+
+
+    # Temporal Split
+    if train_indices is None or test_indices is None:
+        train_indices, test_indices = get_panel_holdout_indices(
+            df, GEO_COL, DATE_COL, HOLDOUT_WEEKS
+        )
+
+    # FAIL FAST: Ensure we have data
+    if not train_indices or len(train_indices) == 0:
+        raise ValueError("train_indices is empty. Cannot prepare model data.")
+    if not test_indices or len(test_indices) == 0:
+        raise ValueError("test_indices is empty. Cannot prepare model data.")
+
+    df_train = df.iloc[train_indices].copy()
+    df_test = df.iloc[test_indices].copy()
+    
+    # Normalize spend AFTER split, fitting on train only
+    spend_max_by_currency = {}  # Store max per (currency, channel) from train
+    
+    for col in SPEND_COLS:
+        if col not in df_train.columns:
+            continue
+        # Compute max per currency from TRAIN only
+        train_max = df_train.groupby("CURRENCY_CODE")[col].transform("max")
+        df_train[f"{col}_norm"] = df_train[col] / (train_max + EPSILON)
+        
+        # Store max values for applying to test
+        currency_max = df_train.groupby("CURRENCY_CODE")[col].max().to_dict()
+        spend_max_by_currency[col] = currency_max
+        
+        # Apply SAME max to test (no data leakage)
+        test_max = df_test["CURRENCY_CODE"].map(currency_max).fillna(EPSILON)
+        df_test[f"{col}_norm"] = df_test[col] / (test_max + EPSILON)
+    
+    spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df_train.columns]
+    print(f"Normalized {len(spend_norm_cols)} spend columns using train-only max")
+
+    # Scale features and seasonality (StandardScaler)    
+    scaler_features = StandardScaler()
+    scaler_season = StandardScaler()
+    
+    # Fit on train, transform both
+    X_features_train = scaler_features.fit_transform(df_train[other_feature_cols].fillna(0).values)
+    X_season_train = scaler_season.fit_transform(df_train[season_cols].fillna(0).values)
+    
+    X_features_test = scaler_features.transform(df_test[other_feature_cols].fillna(0).values)
+    X_season_test = scaler_season.transform(df_test[season_cols].fillna(0).values)
+
+    # Prepare Dictionary for Model Fitting
+    # Fill any NaNs in spend normalized columns
+    channel_names = [c.replace("_norm", "").replace("_SPEND", "") for c in spend_norm_cols]
+    
+    model_data = {
+        "X_spend_train": np.ascontiguousarray(df_train[spend_norm_cols].fillna(0).values).astype(np.float64),
+        "X_spend_test": np.ascontiguousarray(df_test[spend_norm_cols].fillna(0).values).astype(np.float64),
+        "X_features_train": np.ascontiguousarray(X_features_train).astype(np.float64),
+        "X_features_test": np.ascontiguousarray(X_features_test).astype(np.float64),
+        "X_season_train": np.ascontiguousarray(X_season_train).astype(np.float64),
+        "X_season_test": np.ascontiguousarray(X_season_test).astype(np.float64),
+        "y_train": np.ascontiguousarray(df_train["y_log"].fillna(0).values).astype(np.float64),
+        "y_test": np.ascontiguousarray(df_test["y_log"].fillna(0).values).astype(np.float64),
+        "y_train_original": np.ascontiguousarray(df_train[TARGET_COL].fillna(0).values).astype(np.float64),
+        "y_test_original": np.ascontiguousarray(df_test[TARGET_COL].fillna(0).values).astype(np.float64),
+        "territory_idx_train": indices["territory_idx"][train_indices],
+        "territory_idx_test": indices["territory_idx"][test_indices],
+        "n_territories": len(indices["territory_names"]),
+        "channel_names": channel_names,
+        "spend_cols_raw": [c + "_SPEND" for c in channel_names],
+        "feature_names": other_feature_cols,
+        "df_train": df_train,
+        "df_test": df_test,
+    }
+
+
+    print(f"\n{'='*60}")
+    print(f"MODEL FEATURE SUMMARY")
+    print(f"{'='*60}")
+    print(f"\n1. SPEND CHANNELS (X_spend) - {model_data['X_spend_train'].shape[1]} channels:")
+    print(f"   {model_data['channel_names']}")
+    print(f"\n2. OTHER FEATURES (X_features) - {len(other_feature_cols)} cols:")
+    print(f"   {other_feature_cols}")
+    print(f"\n3. SEASONALITY (X_season) - {model_data['X_season_train'].shape[1]} cols:")
+    print(f"   {season_cols}")
+    print(f"\n{'='*60}")
+    total_features = model_data['X_spend_train'].shape[1] + len(other_feature_cols) + model_data['X_season_train'].shape[1]
+    print(f"TOTAL FEATURES: {total_features}")
+    print(f"{'='*60}")
+    
+    # Data scale debug
+    print(f"X_features: std (avg)={model_data['X_features_train'].std(axis=0).mean():.3f}")
+    print(f"========================\n")
+    
+    # Add metadata for predictions deliverable
+    model_data.update({
+        "dates_train": df_train[DATE_COL].dt.strftime("%Y-%m-%d").values,
+        "dates_test": df_test[DATE_COL].dt.strftime("%Y-%m-%d").values,
+        "territories_train": df_train[GEO_COL].values,
+        "territories_test": df_test[GEO_COL].values,
+    })
+    
+    inspect_dir = Path("data/inspection")
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    
+    df_train.to_parquet(inspect_dir / "hierarchical_train.parquet", index=False)
+    df_test.to_parquet(inspect_dir / "hierarchical_test.parquet", index=False)
+    print(f" - Saved inspection data to {inspect_dir}")
+    return model_data

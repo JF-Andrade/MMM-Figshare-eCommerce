@@ -43,7 +43,7 @@ def mock_mmm() -> MagicMock:
 
 def test_extract_adstock_params_returns_dataframe(mock_mmm: MagicMock) -> None:
     """Test that extract_adstock_params returns a DataFrame."""
-    from src.insights import extract_adstock_params
+    from src.utils.pymc_marketing_helpers import extract_adstock_params
 
     result = extract_adstock_params(mock_mmm)
 
@@ -55,7 +55,7 @@ def test_extract_adstock_params_returns_dataframe(mock_mmm: MagicMock) -> None:
 
 def test_extract_saturation_params_returns_dataframe(mock_mmm: MagicMock) -> None:
     """Test that extract_saturation_params returns a DataFrame."""
-    from src.insights import extract_saturation_params
+    from src.utils.pymc_marketing_helpers import extract_saturation_params
 
     result = extract_saturation_params(mock_mmm)
 

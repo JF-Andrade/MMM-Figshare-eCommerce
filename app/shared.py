@@ -107,3 +107,8 @@ def init_page_config(page_title: str) -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+
+def format_currency(value: float) -> str:
+    """Format value as currency string."""
+    return f"${value:,.2f}"

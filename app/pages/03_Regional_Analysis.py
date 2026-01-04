@@ -59,8 +59,8 @@ def main():
         "total_spend": "sum",
         "contribution": "sum",
     }).reset_index()
-    regional_summary.columns = ["region", "avg_roi", "total_spend", "total_contribution"]
-    regional_summary = regional_summary.sort_values("avg_roi", ascending=False)
+    regional_summary.columns = ["region", "avg_iroas", "total_spend", "total_contribution"]
+    regional_summary = regional_summary.sort_values("avg_iroas", ascending=False)
 
     # Find best channel per region
     best_channels = filtered_df.loc[filtered_df.groupby("region")["roi"].idxmax()][["region", "channel"]]
@@ -74,7 +74,7 @@ def main():
 
         kpi_row([
             {"label": "Regions Selected", "value": len(selected_regions)},
-            {"label": "Best Region", "value": best_region["region"], "delta": f"ROI: {best_region['avg_roi']:.2f}x"},
+            {"label": "Best Region", "value": best_region["region"], "delta": f"iROAS: {best_region['avg_iroas']:.2f}x"},
             {"label": "Total Spend", "value": f"{total_spend:,.0f}"},
         ])
 

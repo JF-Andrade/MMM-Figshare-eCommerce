@@ -62,7 +62,8 @@ def main():
         current = lift.get('current_revenue') or lift.get('current_contribution', 0)
         projected = lift.get('optimal_revenue') or lift.get('projected_contribution', 0)
         lift_pct = lift.get('lift_pct', 0)
-        lift_abs = lift.get('lift_absolute', 0)
+        # Calculate lift_abs if not provided (territory metrics don't include it)
+        lift_abs = lift.get('lift_absolute') or (projected - current)
         
         metrics.append({
             "label": "Current Contribution",
@@ -99,6 +100,10 @@ def main():
 
     import pandas as pd
     opt_df = pd.DataFrame(optimization)
+    
+    # Normalize column names (schema differs between global and territory)
+    pct_col = "delta_spend_pct" if "delta_spend_pct" in opt_df.columns else "change_pct"
+    opt_col = "optimized_spend" if "optimized_spend" in opt_df.columns else "optimal_spend"
 
     # Color code the change
     def color_change(val):
@@ -108,28 +113,37 @@ def main():
             return "background-color: rgba(255, 0, 0, 0.2)"
         return ""
 
-    styled_df = opt_df.style.applymap(color_change, subset=["change_pct"])
+    styled_df = opt_df.style.applymap(color_change, subset=[pct_col])
     st.dataframe(styled_df, use_container_width=True)
 
     # Insights
     st.markdown("---")
 
-    increases = [o for o in optimization if o["change_pct"] > 0]
-    decreases = [o for o in optimization if o["change_pct"] < 0]
+    increases = [o for o in optimization if o.get(pct_col, o.get("change_pct", 0)) > 0]
+    decreases = [o for o in optimization if o.get(pct_col, o.get("change_pct", 0)) < 0]
+    
+    # Detect format: delta_spend_pct is decimal (0.30 = 30%), change_pct is percentage (30 = 30%)
+    is_decimal_format = pct_col == "delta_spend_pct"
 
     if increases:
-        top_increase = max(increases, key=lambda x: x["change_pct"])
+        top_increase = max(increases, key=lambda x: x.get(pct_col, x.get("change_pct", 0)))
+        pct_val = top_increase.get(pct_col, top_increase.get("change_pct", 0))
+        opt_val = top_increase.get(opt_col, top_increase.get("optimal_spend", 0))
+        pct_display = pct_val * 100 if is_decimal_format else pct_val
         insight_box(
-            f"**Increase** budget for **{top_increase['channel']}** by {top_increase['change_pct']:.1f}% "
-            f"(from {top_increase['current_spend']:,.0f} to {top_increase['optimal_spend']:,.0f}).",
+            f"**Increase** budget for **{top_increase['channel']}** by {pct_display:.1f}% "
+            f"(from {top_increase['current_spend']:,.0f} to {opt_val:,.0f}).",
             insight_type="success",
         )
 
     if decreases:
-        top_decrease = min(decreases, key=lambda x: x["change_pct"])
+        top_decrease = min(decreases, key=lambda x: x.get(pct_col, x.get("change_pct", 0)))
+        pct_val = top_decrease.get(pct_col, top_decrease.get("change_pct", 0))
+        opt_val = top_decrease.get(opt_col, top_decrease.get("optimal_spend", 0))
+        pct_display = abs(pct_val) * 100 if is_decimal_format else abs(pct_val)
         insight_box(
-            f"**Reduce** budget for **{top_decrease['channel']}** by {abs(top_decrease['change_pct']):.1f}% "
-            f"(from {top_decrease['current_spend']:,.0f} to {top_decrease['optimal_spend']:,.0f}).",
+            f"**Reduce** budget for **{top_decrease['channel']}** by {pct_display:.1f}% "
+            f"(from {top_decrease['current_spend']:,.0f} to {opt_val:,.0f}).",
             insight_type="warning",
         )
 

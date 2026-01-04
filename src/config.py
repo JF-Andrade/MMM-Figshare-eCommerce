@@ -27,6 +27,8 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
+DELIVERABLES_DIR = PROJECT_ROOT / "deliverables"
+INSPECTION_DIR = PROJECT_ROOT / "data" / "inspection"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
 DATA_FILENAME = "conjura_mmm_data.csv"
@@ -160,8 +162,8 @@ HOLDOUT_WEEKS = 8
 
 # --- MCMC Settings ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 4000
-MCMC_TUNE = 500
+MCMC_DRAWS = 40
+MCMC_TUNE = 10
 MCMC_TARGET_ACCEPT = 0.85
 MCMC_MAX_TREEDEPTH = 12
 MCMC_SAMPLER = "numpyro"          # Options: "pymc", "numpyro" (requires JAX)
@@ -193,24 +195,38 @@ PRIOR_HORSESHOE_LAMBDA_BETA = 1 # HalfCauchy beta for local shrinkage
 # --- Priors: Seasonality ---
 PRIOR_GAMMA_SEASON_SIGMA = 0.3   # Normal sigma for seasonality
 
-# --- Priors: Likelihood (Student-T) ---
+# --- Priors: Likelihood (Student-T for robust regression) ---
 PRIOR_SIGMA_OBS = 1.0  # HalfNormal sigma for observation noise. Calibrated for y_log with std ≈ 0.5-1.5
-USE_STUDENT_T = True   # Use robust Student-T likelihood
 PRIOR_NU_ALPHA = 2     # Gamma(alpha, beta) for degrees of freedom
 PRIOR_NU_BETA = 0.5    # mean nu ≈ 4 (more robust to outliers)
+
+# --- Priors: Horseshoe Details ---
+PRIOR_HORSESHOE_NU = 3             # Degrees of freedom for HalfStudentT
+PRIOR_HORSESHOE_C2_ALPHA = 2       # InverseGamma alpha for slab variance
+PRIOR_HORSESHOE_C2_BETA = 1        # InverseGamma beta for slab variance
+
+# --- Numerical Stability ---
+EPSILON = 1e-8
+ADSTOCK_CLIP_MIN = 0.01
+ADSTOCK_CLIP_MAX = 0.99
 
 # =============================================================================
 # 7. BASELINE MODEL CONFIGURATION (Ridge Regression with Bayesian Optimization)
 # =============================================================================
 
 # Bayesian Hyperparameter Search (gp_minimize)
-BAYESIAN_N_CALLS = 50
-BAYESIAN_ADSTOCK_BOUNDS = (0.001, 0.5)   # log-uniform (conservative upper bound)
+BAYESIAN_N_CALLS = 10
+BAYESIAN_ADSTOCK_BOUNDS = (0.05, 0.8)   # log-uniform (conservative upper bound)
 BAYESIAN_SATURATION_BOUNDS = (0.1, 0.5)   # increased lower bound to prevent binary-like behavior
-BAYESIAN_ALPHA_BOUNDS = (0.1, 500.0)      # log-uniform
+BAYESIAN_ALPHA_BOUNDS = (5, 500.0)      # log-uniform
+
+# Ridge Regression Settings
+RIDGE_CV_SPLITS = 5
+RIDGE_CV_GAP = 2
+DEFAULT_RIDGE_ALPHA = 10.0
 
 # Cross-Validation Settings
-CV_GAP_WEEKS = 2  # Gap between train/test folds to prevent adstock leakage
+
 
 # =============================================================================
 # 8. EXPERIMENT TRACKING (MLflow)

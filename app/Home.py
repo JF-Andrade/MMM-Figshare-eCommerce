@@ -39,7 +39,7 @@ def main():
     roi = deliverables.get("roi")
     if roi:
         best = max(roi, key=lambda x: x.get("roi", 0))
-        col2.metric("Best Channel (Global)", best["channel"], f"{best['roi']:.2f}x")
+        col2.metric("Best Channel (iROAS)", best["channel"], f"{best['roi']:.2f}x")
 
     regional = deliverables.get("regional")
     if regional:
