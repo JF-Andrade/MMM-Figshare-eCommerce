@@ -34,10 +34,17 @@ def shared_sidebar() -> dict | None:
             st.sidebar.info("Run `python scripts/mmm_hierarchical.py` first.")
             return None
         
-        # Run selector
-        run_options = {
-            f"{r['run_name']} (R2: {r['r2_test']:.3f})": r['run_id'] for r in runs if r['r2_test']
-        } or {r['run_name']: r['run_id'] for r in runs}
+        # Run selector - include datetime and run_id to differentiate runs
+        from datetime import datetime
+        
+        def format_run_label(r):
+            run_date = datetime.fromtimestamp(r['start_time'] / 1000)
+            date_str = run_date.strftime("%Y-%m-%d %H:%M")
+            if r['r2_test']:
+                return f"{r['run_name']} (R2: {r['r2_test']:.3f}) [{date_str}]"
+            return f"{r['run_name']} [{date_str}]"
+        
+        run_options = {format_run_label(r): r['run_id'] for r in runs}
         
         selected_label = st.sidebar.selectbox(
             "Select Model Run",

@@ -218,7 +218,8 @@ def load_deliverable(run_id: str, name: str, client: MlflowClient | None = None)
 
         return data
 
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Failed to load artifact '{name}' from {artifact_path}: {e}")
         return None
 
 

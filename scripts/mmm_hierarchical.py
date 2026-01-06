@@ -596,8 +596,7 @@ def run_hierarchical(
         roi_data = contrib_df[["channel", "roi", "total_spend", "contribution"]].to_dict(orient="records")
         mlflow.log_dict({"roi": roi_data}, "deliverables/roi.json")
         
-        # Log marginal ROAS analysis
-        log_marginal_roas(contrib_df, saturation_params)
+        # Note: log_marginal_roas called after saturation_params is computed
         
         # Iterate over actual regions to compute specific metrics
         print("\nComputing regional metrics...")
@@ -724,6 +723,9 @@ def run_hierarchical(
         mlflow.log_dict({"adstock_territory": adstock_territory_params}, "deliverables/adstock_territory.json")
         mlflow.log_dict({"saturation_territory": saturation_territory_params}, "deliverables/saturation_territory.json")
         print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
+
+        # Log marginal ROAS analysis (must be after saturation_params is computed)
+        log_marginal_roas(contrib_df, saturation_params)
 
         # 6. Compute Efficiency Metrics (iROAS, CAC, Attribution)
         # Uses the model's contribution estimates + AOV approach

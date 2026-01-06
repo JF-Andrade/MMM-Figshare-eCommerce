@@ -18,6 +18,7 @@ from app.components import (
     kpi_row,
     optimization_comparison_chart,
     reallocation_chart,
+    display_saturation_alerts,
 )
 
 init_page_config("Budget Optimization")
