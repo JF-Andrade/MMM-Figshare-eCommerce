@@ -74,9 +74,8 @@ def main():
         - Channel ROI and Contribution charts
         - Saturation and Anomaly alerts
         - Regional breakdown and heatmap
-        
-        [Go to Performance Analysis](Performance_Analysis)
         """)
+        st.page_link("pages/01_Performance_Analysis.py", label="Go to Performance Analysis")
 
         st.markdown("---")
 
@@ -88,9 +87,8 @@ def main():
         - Drag sliders to adjust channel budgets
         - See projected contribution changes
         - Compare current vs simulated allocation
-        
-        [Go to What-If Simulator](What_If_Simulator)
         """)
+        st.page_link("pages/03_What_If_Simulator.py", label="Go to What-If Simulator")
 
     with col2:
         st.markdown("""
@@ -101,9 +99,8 @@ def main():
         - Current vs Optimal contribution
         - Channel reallocation table
         - Actionable insights
-        
-        [Go to Budget Optimization](Budget_Optimization)
         """)
+        st.page_link("pages/02_Budget_Optimization.py", label="Go to Budget Optimization")
 
         st.markdown("---")
 
@@ -115,9 +112,8 @@ def main():
         - Adstock and Saturation parameters
         - Model comparison (Baseline vs Hierarchical)
         - Convergence diagnostics
-        
-        [Go to Technical Details](Technical_Details)
         """)
+        st.page_link("pages/04_Technical_Details.py", label="Go to Technical Details")
 
     st.markdown("---")
 
@@ -129,9 +125,8 @@ def main():
     - R² and MAPE trends over time
     - ROI evolution by channel
     - Historical benchmarking
-    
-    [Go to Historical Tracking](Historical_Tracking)
     """)
+    st.page_link("pages/05_Historical_Tracking.py", label="Go to Historical Tracking")
 
     st.markdown("---")
 
