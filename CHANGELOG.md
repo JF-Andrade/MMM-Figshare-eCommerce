@@ -2,6 +2,50 @@
 
 All notable changes to the MMM project.
 
+## [2026-01-05] Dashboard Reorganization & New Features
+
+Major dashboard restructuring: consolidated 10 pages into 5 focused pages with clear user journey.
+
+### Dashboard Reorganization
+
+| Before                           | After                         | Change       |
+| -------------------------------- | ----------------------------- | ------------ |
+| 10 pages with redundant content  | 5 focused pages               | Consolidated |
+| Territory selector on each page  | Global selector in sidebar    | Centralized  |
+| Mixed business/technical content | Audience-appropriate grouping | Reorganized  |
+
+**New Page Structure:**
+
+- `Home.py` - Navigation hub with section cards
+- `01_Performance_Analysis.py` - Channel performance, regional insights, alerts
+- `02_Budget_Optimization.py` - Optimal allocation recommendations
+- `03_What_If_Simulator.py` - Interactive budget simulation
+- `04_Technical_Details.py` - Parameters, comparison, diagnostics (tabbed)
+- `05_Historical_Tracking.py` - ROI trends and benchmarks over time
+
+### New Features
+
+| Feature               | Description                        | File                        |
+| --------------------- | ---------------------------------- | --------------------------- |
+| Saturation Alerts     | Highlight channels >80% saturated  | `alerts.py`                 |
+| ROI Anomaly Detection | Flag territories with outlier ROI  | `alerts.py`                 |
+| Excel Export          | Multi-sheet report download        | `export.py`                 |
+| What-If Simulator     | Hill function budget simulation    | `03_What_If_Simulator.py`   |
+| ROI Trends            | Cross-run ROI time series          | `05_Historical_Tracking.py` |
+| Historical Benchmarks | Compare current vs 6-month average | `05_Historical_Tracking.py` |
+
+### Files Deleted
+
+- `01_Executive_Summary.py` (merged into Performance Analysis)
+- `03_Regional_Analysis.py` (merged into Performance Analysis)
+- `04_Model_Details.py` (merged into Technical Details)
+- `05_Model_Comparison.py` (merged into Technical Details)
+- `06_Channel_Efficiency.py` (merged into Performance Analysis)
+- `08_ROI_Trends.py` (merged into Historical Tracking)
+- `09_Historical_Benchmarks.py` (merged into Historical Tracking)
+
+---
+
 ## [2026-01-04] Territory Data Scale Fix & Dashboard Enhancements
 
 Critical fix for territory-level contributions and optimization data.

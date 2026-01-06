@@ -72,12 +72,13 @@ The primary way to consume model results is through the **Streamlit Dashboard**:
 streamlit run app/Home.py
 ```
 
-**Key Modules:**
+**Dashboard Pages (5 focused views):**
 
-1. **Executive Summary**: High-level KPIs, global revenue lift estimates, and ROI rankings.
-2. **Budget Optimization**: "What-if" scenarios for budget reallocation (Global & Territory-specific).
-3. **Regional Analysis**: Deep dive into adstock/saturation effects per territory.
-4. **Model Details**: Technical diagnostics, parameter distributions, and ACTUAL vs PREDICTED charts.
+1. **Performance Analysis**: Channel ROI, contribution charts, saturation alerts, regional heatmap
+2. **Budget Optimization**: Optimal allocation recommendations, reallocation table
+3. **What-If Simulator**: Interactive budget sliders with real-time contribution projection
+4. **Technical Details**: Adstock/saturation parameters, model comparison, diagnostics (tabbed)
+5. **Historical Tracking**: ROI trends over time, benchmarks vs 6-month average
 
 ### Deliverables (MLflow)
 

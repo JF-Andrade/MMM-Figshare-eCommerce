@@ -15,10 +15,10 @@ from app.mlflow_loader import (
 
 def shared_sidebar() -> dict | None:
     """
-    Render shared sidebar with run selector.
+    Render shared sidebar with run and territory selectors.
     
     All pages should call this function to maintain consistent
-    navigation and run selection across the dashboard.
+    navigation and filtering across the dashboard.
     
     Returns:
         Loaded deliverables dict, or None if no runs available.
@@ -52,7 +52,42 @@ def shared_sidebar() -> dict | None:
             with st.spinner("Loading data..."):
                 st.session_state.deliverables = load_all_deliverables(run_id, client)
         
-        # Key Metrics (compact view)
+        deliverables = st.session_state.get("deliverables", {})
+        
+        # ==========================================================================
+        # GLOBAL TERRITORY SELECTOR
+        # ==========================================================================
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Territory Filter")
+        
+        # Extract territories from deliverables
+        territories = []
+        contributions_territory = deliverables.get("contributions_territory")
+        if contributions_territory:
+            import pandas as pd
+            terr_df = pd.DataFrame(contributions_territory)
+            if "territory" in terr_df.columns:
+                territories = sorted(terr_df["territory"].unique().tolist())
+        
+        if territories:
+            territory_options = ["All Territories"] + territories
+            selected_territory = st.sidebar.selectbox(
+                "View Data For",
+                options=territory_options,
+                key="global_territory_selector",
+            )
+            
+            if selected_territory == "All Territories":
+                st.session_state.territory = None
+            else:
+                st.session_state.territory = selected_territory
+        else:
+            st.session_state.territory = None
+            st.sidebar.caption("Territory data not available.")
+        
+        # ==========================================================================
+        # KEY METRICS (compact view)
+        # ==========================================================================
         run_info = next(r for r in runs if r['run_id'] == run_id)
         st.sidebar.markdown("---")
         
@@ -73,11 +108,17 @@ def shared_sidebar() -> dict | None:
             if run_info.get('training_time'):
                 st.text(f"Training: {run_info['training_time']:.0f}s")
         
-        return st.session_state.get("deliverables")
+        return deliverables
         
     except Exception as e:
         st.sidebar.error(f"Error: {e}")
         return None
+
+
+def get_selected_territory() -> str | None:
+    """Return the globally selected territory from session state."""
+    return st.session_state.get("territory")
+
 
 
 def page_header(title: str, subtitle: str = None) -> None:

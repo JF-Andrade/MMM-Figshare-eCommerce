@@ -11,7 +11,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-
 import arviz as az
 import matplotlib.pyplot as plt
 import mlflow
@@ -19,6 +18,8 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor
+from sklearn.preprocessing import StandardScaler
+import tempfile
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -40,7 +41,6 @@ from src.config import (
     SPEND_COLS,
     TARGET_COL,
     YEARLY_SEASONALITY,
-    HOLDOUT_WEEKS,
     ALL_FEATURES,
     SEASON_COLS,
     DATE_COL,
@@ -98,25 +98,13 @@ def prepare_hierarchical_data(
         mask = df_combined[GEO_COL] == region
         df_combined.loc[mask, "trend"] = np.arange(mask.sum()) / (mask.sum() + 1)
 
-    # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
-    # 3. Add Temporal features (Cyclic Sin/Cos for Week and Month)
-    # REDUHNDANCY REMOVED: Already computed in prepare_weekly_data() per region
-    # and preserved during concatenation. Calling it here again would overwrite
-    # aggregated event flags (like Black Friday) with incorrect weekly-start values.
-
-
-    # C2 FIX: Removed normalize_spend_by_currency() here
-    # Normalization now happens in prepare_model_data() AFTER train/test split
-    # to prevent data leakage (max from test influencing train normalization)
-    # Just ensure SPEND_COLS exist for later normalization
-
-    # 5. Log-transform target
+    # 3. Log-transform target
     df_combined['y_log'] = np.log1p(df_combined[TARGET_COL])
 
-    # 6. Ensure consistent sorting before generating indices
+    # 4. Ensure consistent sorting before generating indices
     df_combined = df_combined.sort_values([GEO_COL, DATE_COL]).reset_index(drop=True)
     
-    # VALIDATION: Verify monotonic dates within each territory (required for adstock)
+    # Verify monotonic dates within each territory (required for adstock)
     for geo in df_combined[GEO_COL].unique():
         geo_dates = df_combined.loc[df_combined[GEO_COL] == geo, DATE_COL]
         if not geo_dates.is_monotonic_increasing:
@@ -125,7 +113,7 @@ def prepare_hierarchical_data(
                 "Adstock computation requires sorted data."
             )
 
-    # 7. Create hierarchy indices (simplified: Global → Territory)
+    # 5. Create hierarchy indices (simplified: Global → Territory)
     territory_idx, territory_names = create_hierarchy_indices(df_combined, geo_col=GEO_COL)
 
     indices = {
@@ -176,7 +164,7 @@ def prepare_model_data(
     df_test = df.iloc[test_indices].copy()
     
     # =========================================================================
-    # C2 FIX: Normalize spend AFTER split, fitting on train only
+    # Normalize spend AFTER split, fitting on train only
     # =========================================================================
     spend_max_by_currency = {}  # Store max per (currency, channel) from train
     
@@ -196,13 +184,10 @@ def prepare_model_data(
         df_test[f"{col}_norm"] = df_test[col] / (test_max + 1e-8)
     
     spend_norm_cols = [f"{c}_norm" for c in SPEND_COLS if f"{c}_norm" in df_train.columns]
-    print(f"C2 FIX: Normalized {len(spend_norm_cols)} spend columns using train-only max")
+    print(f"Normalized {len(spend_norm_cols)} spend columns using train-only max")
     # =========================================================================
 
     # Scale features and seasonality (StandardScaler)
-    # This helps NUTS sampler convergence
-    from sklearn.preprocessing import StandardScaler
-    
     scaler_features = StandardScaler()
     scaler_season = StandardScaler()
     
@@ -479,8 +464,6 @@ def run_hierarchical(
         print(f"Divergences: {diagnostics['divergences']}")
         
         # === Enhanced MLflow Logging ===
-        import tempfile
-        
         # 1. Convergence summary table
         try:
             summary_df = az.summary(idata, var_names=[
@@ -556,7 +539,6 @@ def run_hierarchical(
         print(f"Train MAPE: {combined_metrics['mape_train']:.1f}%, Test MAPE: {combined_metrics['mape_test']:.1f}%")
 
         # Save PREDICTIONS for Actual vs Predicted chart
-        import pandas as pd
         predictions_df = pd.DataFrame({
             "date": list(m_data["dates_train"]) + list(m_data["dates_test"]),
             "territory": list(m_data["territories_train"]) + list(m_data["territories_test"]),
@@ -754,8 +736,6 @@ def run_hierarchical(
         aov = total_revenue / total_transactions if total_transactions > 0 else 0
         print(f"Global AOV: {aov:.2f}")
         
-        # contrib_df already computed in section 5 (compute_channel_contributions)
-        # It has: channel, contribution, total_spend, roi, contribution_pct
         # Compute channel metrics using AOV
         metrics_df = compute_channel_metrics(contrib_df, aov)
         
@@ -837,11 +817,11 @@ def run_hierarchical(
             regions,
         )
         
-        # FIX: Convert territory contributions from log scale to linear $ scale
+        # Convert territory contributions from log scale to linear $ scale
         contrib_by_territory_df["contribution_log"] = contrib_by_territory_df["contribution"]
         contrib_by_territory_df["contribution"] = contrib_by_territory_df["contribution_log"] * scale_factor
         
-        # FIX: Override total_spend with raw spend per territory (not normalized)
+        # Override total_spend with raw spend per territory (not normalized)
         spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
         df_train = m_data["df_train"]
         
@@ -883,7 +863,7 @@ def run_hierarchical(
         mlflow.log_dict({"lift_by_territory": lift_by_territory}, "deliverables/lift_by_territory.json")
         print(f"Optimization completed for {len(lift_by_territory)} territories")
 
-        # Save deliverables (validated)
+        # Save deliverables
         run_id = mlflow.active_run().info.run_id
         
         # Aggregate ROI/Contribution for schema validation

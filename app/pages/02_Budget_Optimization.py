@@ -1,5 +1,7 @@
 """
 Budget Optimization page.
+
+Optimal budget allocation recommendations using global territory filter.
 """
 
 import sys
@@ -10,7 +12,7 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.shared import shared_sidebar, page_header, init_page_config
+from app.shared import shared_sidebar, page_header, init_page_config, get_selected_territory
 from app.components import (
     insight_box,
     kpi_row,
@@ -29,29 +31,20 @@ def main():
         st.warning("No model data available. Run the hierarchical model first.")
         return
 
-    # Territory selector
+    # Use global territory filter from sidebar
+    territory = get_selected_territory()
+    context_label = f" ({territory})" if territory else ""
+
+    # Get data based on territory selection
     optimization_territory = deliverables.get("optimization_territory")
     
-    if optimization_territory:
-        territories = sorted(set(o["territory"] for o in optimization_territory))
-        view_mode = st.radio("View Mode", ["Global", "By Territory"], horizontal=True)
-        
-        if view_mode == "By Territory":
-            selected_territory = st.selectbox("Select Territory", territories)
-            optimization = [o for o in optimization_territory if o["territory"] == selected_territory]
-            
-            # Get lift for selected territory
-            lift_by_territory = deliverables.get("lift_by_territory", [])
-            lift = next((l for l in lift_by_territory if l.get("territory") == selected_territory), None)
-        else:
-            optimization = deliverables.get("optimization")
-            lift = deliverables.get("revenue_lift")
+    if territory and optimization_territory:
+        optimization = [o for o in optimization_territory if o.get("territory") == territory]
+        lift_by_territory = deliverables.get("lift_by_territory", [])
+        lift = next((l for l in lift_by_territory if l.get("territory") == territory), None)
     else:
         optimization = deliverables.get("optimization")
         lift = deliverables.get("revenue_lift")
-        
-        # Debug: Show global mode active
-        st.caption("Showing Global optimization data. Territory breakdown requires pipeline re-run.")
 
     if not optimization:
         st.warning("Optimization data not available.")
@@ -85,6 +78,12 @@ def main():
 
     if metrics:
         kpi_row(metrics)
+
+    # Saturation Alerts
+    saturation = deliverables.get("saturation")
+    contributions = deliverables.get("contributions")
+    if saturation and contributions:
+        display_saturation_alerts(saturation, contributions)
 
     st.markdown("---")
 
