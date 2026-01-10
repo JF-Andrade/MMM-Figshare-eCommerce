@@ -725,7 +725,7 @@ def run_hierarchical(
         print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
 
         # Log marginal ROAS analysis (must be after saturation_params is computed)
-        log_marginal_roas(contrib_df, saturation_params)
+        marginal_roas_data = log_marginal_roas(contrib_df, saturation_params)
 
         # 6. Compute Efficiency Metrics (iROAS, CAC, Attribution)
         # Uses the model's contribution estimates + AOV approach
@@ -733,30 +733,16 @@ def run_hierarchical(
         from src.insights import compute_channel_metrics, compute_blended_metrics
         
         # Calculate AOV from training data (total_revenue already computed in section 5)
-        # AOV = Total Revenue / Total Transactions
-        total_transactions = m_data["df_train"]["ALL_PURCHASES"].sum()
-        aov = total_revenue / total_transactions if total_transactions > 0 else 0
-        print(f"Global AOV: {aov:.2f}")
+        transaction_col = [c for c in m_data["df_train"].columns if "transaction" in c.lower()]
+        total_transactions = m_data["df_train"][transaction_col[0]].sum() if transaction_col else 1
+        aov = total_revenue / total_transactions if total_transactions > 0 else 100
         
-        # Compute channel metrics using AOV
-        metrics_df = compute_channel_metrics(contrib_df, aov)
+        channel_metrics = compute_channel_metrics(contrib_df, aov=aov)
+        blended = compute_blended_metrics(contrib_df)
         
-        # Save metrics
-        print("\nTop Channels by iROAS:")
-        print(metrics_df[["channel", "iroas", "cac"]].head())
+        mlflow.log_dict({"channel_metrics": channel_metrics}, "deliverables/channel_metrics.json")
+        mlflow.log_dict(blended, "deliverables/blended_metrics.json")
         
-        mlflow.log_dict(
-            {"channel_metrics": metrics_df.to_dict(orient="records")},
-            "deliverables/channel_metrics.json"
-        )
-        
-        # Compute blended (aggregate) metrics
-        blended_metrics = compute_blended_metrics(metrics_df)
-        print(f"Blended ROAS: {blended_metrics['blended_roas']:.2f}")
-        print(f"Blended CAC: {blended_metrics['blended_cac']:.2f}")
-        
-        mlflow.log_dict(blended_metrics, "deliverables/blended_metrics.json")
-
         # 7. ROI HDI (Probabilistic)
         # ROI with HDI already comes from compute_roi_with_hdi in hierarchical_bayesian.py
         print("\nComputing ROI HDI...")
@@ -789,13 +775,15 @@ def run_hierarchical(
         n_obs_train = len(m_data["X_spend_train"])
         
         # Optimize budget (reallocate within +/- 30% bounds)
+        # Pass marginal_roas_data for accurate lift calculation
         from src.insights import optimize_hierarchical_budget
         optimization_result = optimize_hierarchical_budget(
             contrib_df=contrib_df,
             saturation_params=saturation_params,
             total_budget=total_budget_current,
             n_obs=n_obs_train,
-            budget_bounds_pct=(0.70, 1.30)
+            budget_bounds_pct=(0.70, 1.30),
+            marginal_roas_data=marginal_roas_data,
         )
         
         # Extract results

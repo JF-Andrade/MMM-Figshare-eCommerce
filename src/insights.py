@@ -216,11 +216,12 @@ def optimize_hierarchical_budget(
     total_budget: float,
     n_obs: int,
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
+    marginal_roas_data: list[dict] | None = None,
 ) -> dict:
     """
     Optimize budget allocation using learned Hill saturation parameters.
-
-    Model: Contribution = Scale * n_obs * hill_sat(avg_spend, L, k)
+    
+    Uses marginal_roas data from the pipeline for accurate lift calculation.
 
     Args:
         contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
@@ -228,6 +229,7 @@ def optimize_hierarchical_budget(
         total_budget: Total money to allocate (sum across all obs).
         n_obs: Number of observations (weeks) - for scale normalization.
         budget_bounds_pct: Min/Max multiplier for individual channel spend.
+        marginal_roas_data: Pre-computed marginal ROAS at different spend levels.
 
     Returns:
         Dict with 'allocation' and 'metrics'.
@@ -249,10 +251,9 @@ def optimize_hierarchical_budget(
         contribution = row["contribution"]
         params = param_map.get(ch, {})
 
-        L = params.get("L_mean", 0.3)  # Default if missing
-        k = params.get("k_mean", 2.0)  # Default if missing
+        L = params.get("L_mean", 0.3)
+        k = params.get("k_mean", 2.0)
 
-        # FIX: Use average spend per observation to match model scale
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
 
         if total_spend <= 0 or contribution <= 0:
@@ -266,7 +267,6 @@ def optimize_hierarchical_budget(
             })
             continue
 
-        # Estimate Scale Factor using Hill saturation at average spend level
         sat_current = hill_saturation(avg_spend, L, k)
         scale = contribution / (n_obs * sat_current + 1e-9)
 
@@ -287,7 +287,7 @@ def optimize_hierarchical_budget(
             if m["scale"] > 0:
                 sat = hill_saturation(avg_x, m["L"], m["k"])
                 total_contrib += m["scale"] * n_obs * sat
-        return -total_contrib  # Minimize negative = maximize
+        return -total_contrib
 
     # 3. Constraints & Bounds
     x0 = [m["avg_spend"] for m in model_data]
@@ -316,29 +316,41 @@ def optimize_hierarchical_budget(
         options={"disp": False, "ftol": 1e-6},
     )
 
-    # 5. Format Results
+    # 5. Format Results and Calculate Lift using Marginal ROAS
     optimized_allocation = []
-    current_total_contrib = 0
-    optimal_total_contrib = 0
+    
+    # Build marginal ROAS lookup: {channel: {spend_increase_pct: marginal_roas}}
+    mroas_lookup = {}
+    if marginal_roas_data:
+        for item in marginal_roas_data:
+            ch = item["channel"]
+            pct = item["spend_increase_pct"]
+            mroas = item["marginal_roas"]
+            if ch not in mroas_lookup:
+                mroas_lookup[ch] = {}
+            mroas_lookup[ch][pct] = mroas
+
+    current_total_contrib = contrib_df["contribution"].sum()
+    lift_absolute = 0.0
 
     for i, m in enumerate(model_data):
         opt_avg = result.x[i] if result.success else m["avg_spend"]
-
         opt_total = opt_avg * n_obs
         current_total = m["current_spend"]
-
-        if m["scale"] > 0:
-            curr_c = m["scale"] * n_obs * hill_saturation(m["avg_spend"], m["L"], m["k"])
-            opt_c = m["scale"] * n_obs * hill_saturation(opt_avg, m["L"], m["k"])
-        else:
-            curr_c, opt_c = 0, 0
-
-        current_total_contrib += curr_c
-        optimal_total_contrib += opt_c
+        delta_spend = opt_total - current_total
 
         change_pct = (
-            ((opt_total - current_total) / current_total * 100) if current_total > 0 else 0.0
+            (delta_spend / current_total * 100) if current_total > 0 else 0.0
         )
+
+        # Calculate lift contribution using marginal ROAS
+        if delta_spend != 0 and m["channel"] in mroas_lookup:
+            ch_mroas = mroas_lookup[m["channel"]]
+            # Find closest spend_increase_pct and interpolate
+            pct_levels = sorted(ch_mroas.keys())
+            closest_pct = min(pct_levels, key=lambda x: abs(x - change_pct))
+            marginal_roas = ch_mroas.get(closest_pct, 0)
+            lift_absolute += marginal_roas * delta_spend
 
         optimized_allocation.append({
             "channel": m["channel"],
@@ -347,7 +359,7 @@ def optimize_hierarchical_budget(
             "change_pct": float(change_pct),
         })
 
-    lift_absolute = optimal_total_contrib - current_total_contrib
+    optimal_total_contrib = current_total_contrib + lift_absolute
     lift_pct = (
         (lift_absolute / current_total_contrib * 100) if current_total_contrib > 0 else 0.0
     )
