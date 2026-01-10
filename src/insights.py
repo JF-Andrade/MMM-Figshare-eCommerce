@@ -218,118 +218,135 @@ def optimize_hierarchical_budget(
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
 ) -> dict:
     """
-    Optimize budget allocation and calculate lift using linear ROI approximation.
+    Optimize budget allocation using learned Hill saturation parameters.
 
-    For budget changes within ±30%, linear approximation using current ROI
-    provides a pragmatic estimate. The optimization still uses marginal returns
-    to determine where to reallocate budget.
+    Model: Contribution = Scale * n_obs * hill_sat(avg_spend, L, k)
 
     Args:
-        contrib_df: DataFrame with 'channel', 'total_spend', 'contribution', 'roi'.
+        contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
         saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
         total_budget: Total money to allocate (sum across all obs).
-        n_obs: Number of observations (weeks).
+        n_obs: Number of observations (weeks) - for scale normalization.
         budget_bounds_pct: Min/Max multiplier for individual channel spend.
 
     Returns:
         Dict with 'allocation' and 'metrics'.
     """
-    # 1. Build channel data with bounds
-    channels_data = []
+
+    def hill_saturation(x, L, k):
+        eps = 1e-8
+        x_safe = max(x, eps)
+        L_safe = max(L, eps)
+        return (x_safe**k) / (L_safe**k + x_safe**k + eps)
+
+    # 1. Prepare Data - extract L and k from saturation params
+    model_data = []
+    param_map = {p["channel"]: p for p in saturation_params}
+
     for _, row in contrib_df.iterrows():
         ch = row["channel"]
-        spend = row["total_spend"]
-        contrib = row["contribution"]
-        roi = row.get("roi", contrib / (spend + 1e-9))
-        
-        lb = spend * budget_bounds_pct[0] if spend > 0 else 0
-        ub = spend * budget_bounds_pct[1] if spend > 0 else 0
-        
-        channels_data.append({
+        total_spend = row["total_spend"]
+        contribution = row["contribution"]
+        params = param_map.get(ch, {})
+
+        L = params.get("L_mean", 0.3)  # Default if missing
+        k = params.get("k_mean", 2.0)  # Default if missing
+
+        # FIX: Use average spend per observation to match model scale
+        avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
+
+        if total_spend <= 0 or contribution <= 0:
+            model_data.append({
+                "channel": ch,
+                "scale": 0,
+                "L": L,
+                "k": k,
+                "current_spend": total_spend,
+                "avg_spend": avg_spend,
+            })
+            continue
+
+        # Estimate Scale Factor using Hill saturation at average spend level
+        sat_current = hill_saturation(avg_spend, L, k)
+        scale = contribution / (n_obs * sat_current + 1e-9)
+
+        model_data.append({
             "channel": ch,
-            "current_spend": spend,
-            "current_contrib": contrib,
-            "roi": roi,
-            "lb": lb,
-            "ub": ub,
+            "scale": scale,
+            "L": L,
+            "k": k,
+            "current_spend": total_spend,
+            "avg_spend": avg_spend,
         })
-    
-    # 2. Greedy optimization: move budget from low-ROI to high-ROI channels
-    # Sort by ROI descending - high ROI channels get more budget
-    sorted_channels = sorted(channels_data, key=lambda x: x["roi"], reverse=True)
-    
-    # Calculate how much can be moved
-    total_movable = 0
-    for ch in sorted_channels:
-        if ch["roi"] < 0:  # Channels with negative ROI should be reduced
-            movable = ch["current_spend"] - ch["lb"]
-            total_movable += movable
-    
-    # If no negative ROI channels, take from lowest ROI channels
-    if total_movable == 0:
-        for ch in reversed(sorted_channels):  # Lowest ROI first
-            movable = ch["current_spend"] - ch["lb"]
-            total_movable += movable
-            if total_movable > total_budget * 0.1:  # Cap at 10% reallocation
-                break
-    
-    # 3. Allocate optimal spend based on ROI ranking
+
+    # 2. Objective Function using Hill saturation
+    def objective(avg_spends):
+        total_contrib = 0
+        for i, avg_x in enumerate(avg_spends):
+            m = model_data[i]
+            if m["scale"] > 0:
+                sat = hill_saturation(avg_x, m["L"], m["k"])
+                total_contrib += m["scale"] * n_obs * sat
+        return -total_contrib  # Minimize negative = maximize
+
+    # 3. Constraints & Bounds
+    x0 = [m["avg_spend"] for m in model_data]
+    avg_budget = total_budget / n_obs
+
+    A_eq = np.ones((1, len(x0)))
+    linear_constraint = LinearConstraint(A_eq, [avg_budget], [avg_budget])
+
+    bounds_list = []
+    for m in model_data:
+        current_avg = m["avg_spend"]
+        if current_avg > 0:
+            lb = current_avg * budget_bounds_pct[0]
+            ub = current_avg * budget_bounds_pct[1]
+        else:
+            lb, ub = 0, 0
+        bounds_list.append((lb, ub))
+
+    # 4. Optimize
+    result = minimize(
+        objective,
+        x0,
+        method="SLSQP",
+        constraints=[linear_constraint],
+        bounds=bounds_list,
+        options={"disp": False, "ftol": 1e-6},
+    )
+
+    # 5. Format Results
     optimized_allocation = []
     current_total_contrib = 0
     optimal_total_contrib = 0
-    
-    for ch in channels_data:
-        # Start with current spend
-        optimal_spend = ch["current_spend"]
-        
-        # Negative ROI: reduce to lower bound
-        if ch["roi"] < 0:
-            optimal_spend = ch["lb"]
-        # Top 3 positive ROI: increase to upper bound
-        elif ch in sorted_channels[:3] and ch["roi"] > 0:
-            optimal_spend = ch["ub"]
-        
-        # Calculate contributions
-        current_contrib = ch["current_contrib"]
-        delta_spend = optimal_spend - ch["current_spend"]
-        
-        # Linear approximation: delta_contrib = roi * delta_spend
-        optimal_contrib = current_contrib + (ch["roi"] * delta_spend)
-        
-        current_total_contrib += current_contrib
-        optimal_total_contrib += optimal_contrib
-        
+
+    for i, m in enumerate(model_data):
+        opt_avg = result.x[i] if result.success else m["avg_spend"]
+
+        opt_total = opt_avg * n_obs
+        current_total = m["current_spend"]
+
+        if m["scale"] > 0:
+            curr_c = m["scale"] * n_obs * hill_saturation(m["avg_spend"], m["L"], m["k"])
+            opt_c = m["scale"] * n_obs * hill_saturation(opt_avg, m["L"], m["k"])
+        else:
+            curr_c, opt_c = 0, 0
+
+        current_total_contrib += curr_c
+        optimal_total_contrib += opt_c
+
         change_pct = (
-            (delta_spend / ch["current_spend"] * 100) if ch["current_spend"] > 0 else 0.0
+            ((opt_total - current_total) / current_total * 100) if current_total > 0 else 0.0
         )
-        
+
         optimized_allocation.append({
-            "channel": ch["channel"],
-            "current_spend": float(ch["current_spend"]),
-            "optimal_spend": float(optimal_spend),
+            "channel": m["channel"],
+            "current_spend": float(current_total),
+            "optimal_spend": float(opt_total),
             "change_pct": float(change_pct),
         })
-    
-    # 4. Balance budget (ensure sum unchanged)
-    total_current = sum(ch["current_spend"] for ch in channels_data)
-    total_optimal = sum(a["optimal_spend"] for a in optimized_allocation)
-    budget_diff = total_current - total_optimal
-    
-    if abs(budget_diff) > 1:
-        # Distribute difference proportionally across high-ROI channels
-        high_roi_channels = [a for a in optimized_allocation if a["change_pct"] >= 0]
-        if high_roi_channels:
-            per_channel = budget_diff / len(high_roi_channels)
-            for a in high_roi_channels:
-                a["optimal_spend"] += per_channel
-    
-    # Recalculate lift with balanced budget
-    optimal_total_contrib = current_total_contrib
-    for a in optimized_allocation:
-        ch_data = next(c for c in channels_data if c["channel"] == a["channel"])
-        delta_spend = a["optimal_spend"] - ch_data["current_spend"]
-        optimal_total_contrib += ch_data["roi"] * delta_spend
-    
+
     lift_absolute = optimal_total_contrib - current_total_contrib
     lift_pct = (
         (lift_absolute / current_total_contrib * 100) if current_total_contrib > 0 else 0.0
