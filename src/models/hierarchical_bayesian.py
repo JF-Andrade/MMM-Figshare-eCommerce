@@ -81,7 +81,28 @@ def geometric_adstock_numpy(
     
     Returns:
         Adstocked values with same shape as x
+    
+    Raises:
+        Warning if alpha values are extreme (near 0 or 1), which may indicate
+        convergence issues or unrealistic carryover assumptions.
     """
+    # Validate alpha values - warn on extremes
+    alpha_flat = alpha.flatten()
+    if np.any(alpha_flat < 0.05):
+        import warnings
+        warnings.warn(
+            f"Very low alpha values detected (min={alpha_flat.min():.3f}). "
+            "This implies near-zero carryover. Check model convergence.",
+            UserWarning,
+        )
+    if np.any(alpha_flat > 0.95):
+        import warnings
+        warnings.warn(
+            f"Very high alpha values detected (max={alpha_flat.max():.3f}). "
+            "This implies near-infinite half-life. Check model convergence.",
+            UserWarning,
+        )
+    
     if x.ndim == 1:
         x = x.reshape(-1, 1)
         squeeze_output = True
@@ -607,21 +628,48 @@ def check_convergence(idata: az.InferenceData) -> dict:
 # =============================================================================
 
 
-def predict(model: pm.Model, idata: az.InferenceData) -> "NDArray":
+def predict(
+    model: pm.Model,
+    idata: az.InferenceData,
+    return_hdi: bool = False,
+    hdi_prob: float = 0.94,
+) -> "NDArray" | dict:
     """
-    Generate posterior predictive mean.
+    Generate posterior predictive mean (and optionally HDI).
     
     Args:
         model: PyMC model
         idata: Fitted InferenceData
+        return_hdi: If True, return dict with mean, hdi_low, hdi_high
+        hdi_prob: HDI probability (default 0.94)
     
     Returns:
-        Mean predictions (n_obs,)
+        If return_hdi=False: Mean predictions (n_obs,)
+        If return_hdi=True: Dict with 'mean', 'hdi_low', 'hdi_high' arrays
     """
     with model:
         ppc = pm.sample_posterior_predictive(idata, predictions=True)
     
-    return ppc.predictions["y_obs"].mean(dim=["chain", "draw"]).values
+    y_samples = ppc.predictions["y_obs"]
+    y_mean = y_samples.mean(dim=["chain", "draw"]).values
+    
+    if not return_hdi:
+        return y_mean
+    
+    # Compute HDI bounds
+    hdi_low_pct = (100 - hdi_prob * 100) / 2
+    hdi_high_pct = 100 - hdi_low_pct
+    
+    # Stack chains and draws for percentile calculation
+    y_flat = y_samples.stack(sample=("chain", "draw")).values
+    y_hdi_low = np.percentile(y_flat, hdi_low_pct, axis=-1)
+    y_hdi_high = np.percentile(y_flat, hdi_high_pct, axis=-1)
+    
+    return {
+        "mean": y_mean,
+        "hdi_low": y_hdi_low,
+        "hdi_high": y_hdi_high,
+    }
 
 
 # =============================================================================
@@ -641,7 +689,12 @@ def evaluate(
         y_pred_log: Predictions on log scale
     
     Returns:
-        Dict with r2, mae, mape
+        Dict with r2, mae, smape (labeled as 'mape' for backward compatibility)
+    
+    Note:
+        The 'mape' key actually contains SMAPE (Symmetric MAPE), which is more
+        robust to small y values and asymmetric errors. Formula:
+        SMAPE = mean(|y - ŷ| / ((|y| + |ŷ|) / 2)) × 100
     """
     # Inverse log transform
     y_pred = np.expm1(y_pred_log)
@@ -657,13 +710,14 @@ def evaluate(
     mae = np.mean(np.abs(y_true_original - y_pred))
     
     # SMAPE (Symmetric MAPE) for robustness to small y values
+    # More robust than standard MAPE when y values are near zero
     denominator = (np.abs(y_true_original) + np.abs(y_pred)) / 2 + 1e-8
-    mape = np.mean(np.abs(y_true_original - y_pred) / denominator) * 100
+    smape = np.mean(np.abs(y_true_original - y_pred) / denominator) * 100
     
     return {
         "r2": float(r2),
         "mae": float(mae),
-        "mape": float(mape),
+        "mape": float(smape),  # SMAPE, labeled 'mape' for backward compatibility
     }
 
 

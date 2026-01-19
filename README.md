@@ -21,7 +21,6 @@ Bayesian Marketing Mix Model to **quantify the ROI** of digital advertising chan
 - [Installation](#installation)
 - [Usage](#usage)
 - [Tech Stack](#tech-stack)
-- [Potential Improvements](#potential-improvements)
 - [Author](#author)
 - [License](#license)
 
@@ -163,6 +162,96 @@ All features are centralized in `src/config.py`.
 
 ## Methodology
 
+### Architecture Overview
+
+#### Pipeline Flow
+
+```mermaid
+flowchart LR
+    subgraph Data["Data Layer"]
+        RAW[(Raw Data<br/>Daily)]
+        WEEKLY[(Weekly<br/>Aggregated)]
+    end
+
+    subgraph Preprocess["Preprocessing"]
+        AGG[Aggregation]
+        FEAT[Feature<br/>Engineering]
+        NORM[Currency<br/>Normalization]
+    end
+
+    subgraph Transform["Transformations"]
+        ADS[Geometric<br/>Adstock]
+        SAT[Hill<br/>Saturation]
+    end
+
+    subgraph Model["Bayesian Model"]
+        HIER[Hierarchical<br/>Pooling]
+        MCMC[NUTS<br/>Sampler]
+    end
+
+    subgraph Output["Deliverables"]
+        ROI[Channel ROI]
+        OPT[Budget<br/>Optimization]
+        DASH[Dashboard]
+    end
+
+    RAW --> AGG --> WEEKLY
+    WEEKLY --> FEAT --> NORM
+    NORM --> ADS --> SAT
+    SAT --> HIER --> MCMC
+    MCMC --> ROI & OPT --> DASH
+```
+
+#### Hierarchical Model Structure
+
+```mermaid
+flowchart TB
+    subgraph Hyperpriors["Hyperpriors"]
+        SA[σ_α]
+        SL[σ_L]
+        SB[σ_β]
+    end
+
+    subgraph Global["Global Parameters"]
+        ALPHA[α_channel<br/>Beta 2,2]
+        L[L_channel<br/>HalfNormal]
+        K[k_channel<br/>Gamma 2,1]
+        BETA[β_channel<br/>HalfNormal]
+    end
+
+    subgraph Territory["Territory Parameters"]
+        ALPHA_T[α_territory]
+        L_T[L_territory]
+        BETA_T[β_territory]
+    end
+
+    subgraph Transforms["Data Transforms"]
+        ADS_T[Adstock<br/>x + α·x_prev]
+        SAT_T[Saturation<br/>x^k / L^k+x^k]
+    end
+
+    subgraph Likelihood["Likelihood"]
+        MU[μ = intercept +<br/>Σ β·saturation]
+        Y[y ~ StudentT<br/>ν, μ, σ]
+    end
+
+    SA --> ALPHA_T
+    SL --> L_T
+    SB --> BETA_T
+
+    ALPHA --> ALPHA_T
+    L --> L_T
+    BETA --> BETA_T
+    K --> SAT_T
+
+    ALPHA_T --> ADS_T
+    ADS_T --> SAT_T
+    L_T --> SAT_T
+    BETA_T --> MU
+    SAT_T --> MU
+    MU --> Y
+```
+
 ### Bayesian Media Mix Model
 
 The model uses a **Hierarchical Bayesian** approach to decompose revenue into additive components, using a robust Student-T likelihood to handle outliers.
@@ -182,14 +271,12 @@ Raw spend is transformed to capture consumer behavior dynamics:
 
 1. **Geometric Adstock (Carryover)**
    $$ Adstock(x*t) = x_t + \alpha \cdot x*{t-1} $$
-
    - **$\alpha$ (Alpha)**: Decay rate $[0, 1]$. Represents the % of ad effect retained in the following week.
      - High $\alpha$ (>0.5) $\rightarrow$ Brand building (TV, Video).
      - Low $\alpha$ (<0.3) $\rightarrow$ Direct response (PMax, Search).
 
 2. **Hill Saturation (Diminishing Returns)**
    $$ Saturation(x) = \frac{x^K}{x^K + L^K} $$
-
    - **$K$ (Shape)**: Steepness of the S-curve.
      - $K > 1$: S-shape (threshold effect).
      - $K \le 1$: C-shape (diminishing returns start immediately).
@@ -255,11 +342,31 @@ All priors are externalized to `src/config.py` for easy tuning.
   - **Divergences**: 0 divergences required for reliable posterior.
   - **BFMI**: > 0.3 (ensure energy distribution matches).
 - **Metrics**:
-  - **Deterministic**: $R^2$, MAPE, RMSE.
+  - **Deterministic**: $R^2$, SMAPE (Symmetric MAPE for robustness), RMSE.
   - **Probabilistic**: CRPS (Continuous Ranked Probability Score) and Coverage (HDI).
 - **Splitting**:
   - **Ridge Baseline**: `TimeSeriesSplit` (5 folds) for hyperparameter tuning.
   - **Hierarchical**: **Panel Time-Based Holdout** (Last 8 weeks of each territory).
+
+### Known Limitations
+
+> [!NOTE]
+> **Contribution Calculation.** Model contributions are computed in log-space and
+> converted to monetary scale via a linear scaling factor. This first-order
+> approximation may introduce 5-15% error in absolute values. Channel rankings
+> and relative comparisons remain reliable.
+
+> [!NOTE]  
+> **Budget Optimizer.** The optimization routine estimates channel effectiveness (β)
+> from observed contribution and saturation response. This heuristic does not re-run
+> the full posterior predictive. Maximum precision requires model re-fitting with
+> modified spend scenarios.
+
+> [!NOTE]
+> **What-If Simulator.** The simulator models returns via Hill saturation curves.
+> Carryover (adstock) effects from modified budget allocations are not simulated;
+> they are implicitly captured in the estimated β. This approach is best suited
+> for short-term scenarios (1-4 weeks).
 
 ---
 
@@ -407,17 +514,6 @@ Results are saved to `models/` and tracked in MLflow (`mlruns/`).
 | **Dashboard**    | Streamlit, Plotly, Altair                  |
 | **Environment**  | Conda/Mamba, Intel MKL (BLAS optimization) |
 | **Acceleration** | JAX (XLA Compilation)                      |
-
----
-
-## Potential Improvements
-
-The following areas represent opportunities for extending the project's capabilities:
-
-- **Advanced Seasonality**: Integration with Prophet for decomposing complex holiday effects.
-- **Geo-Lift Calibration**: Bayesian priors calibration using experimental lift studies.
-- **Forecasting Module**: Dedicated production forecasting pipeline with scenario planning.
-- **Time-Varying Intercepts**: Gaussian Process (GP) priors for evolving baseline demand.
 
 ---
 

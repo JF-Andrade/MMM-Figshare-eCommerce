@@ -10,6 +10,7 @@
 | `transformations.py`              | **Core Math**: Adstock, Saturation, Scaling (Low-level)   |
 | `evaluation.py`                   | Metrics calculation, convergence diagnostics, ROI         |
 | `insights.py`                     | Parameter extraction, visualizations, budget optimization |
+| `deliverables.py`                 | Dashboard deliverables generation (standalone execution)  |
 | `schemas.py`                      | Pydantic models for deliverables                          |
 | `comparison.py`                   | Compare baseline vs hierarchical model                    |
 | `pipeline.py`                     | Orchestration, retry logic, state management              |

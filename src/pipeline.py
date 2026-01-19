@@ -54,6 +54,7 @@ class PipelineStage(Enum):
     PREPROCESS = auto()
     TRAIN_BASELINE = auto()
     TRAIN_HIERARCHICAL = auto()
+    GENERATE_DELIVERABLES = auto()
     EVALUATE = auto()
     EXPORT = auto()
 
@@ -220,6 +221,7 @@ class MMMPipeline:
             PipelineStage.PREPROCESS: self._preprocess,
             PipelineStage.TRAIN_BASELINE: self._train_baseline,
             PipelineStage.TRAIN_HIERARCHICAL: self._train_hierarchical,
+            PipelineStage.GENERATE_DELIVERABLES: self._generate_deliverables,
             PipelineStage.EVALUATE: self._evaluate,
             PipelineStage.EXPORT: self._export_results,
         }
@@ -312,6 +314,57 @@ class MMMPipeline:
 
         self.state.hierarchical_model = idata  # Store trace
         self.state.hierarchical_metrics = metrics
+
+    def _generate_deliverables(self) -> None:
+        """Generate all dashboard deliverables from trained model artifacts."""
+        import pickle
+        import arviz as az
+        from src.deliverables import generate_all_deliverables
+
+        # Load model_data and regions from saved artifacts
+        model_data_path = self.config.models_dir / "model_data.pkl"
+        regions_path = self.config.models_dir / "regions.pkl"
+        idata_path = self.config.models_dir / "idata.nc"
+
+        if not model_data_path.exists() or not regions_path.exists():
+            logger.warning(
+                "model_data.pkl or regions.pkl not found. "
+                "Run TRAIN_HIERARCHICAL first to save artifacts."
+            )
+            return
+
+        # Load idata from state or disk
+        if self.state.hierarchical_model is not None:
+            idata = self.state.hierarchical_model
+            logger.info("Using idata from pipeline state")
+        elif idata_path.exists():
+            logger.info(f"Loading idata from {idata_path}")
+            idata = az.from_netcdf(idata_path)
+        else:
+            logger.warning(
+                "No idata found in state or disk. "
+                "Run TRAIN_HIERARCHICAL first."
+            )
+            return
+
+        with open(model_data_path, "rb") as f:
+            m_data = pickle.load(f)
+
+        with open(regions_path, "rb") as f:
+            regions = pickle.load(f)
+
+        logger.info("Generating deliverables from trained model...")
+
+        # Generate deliverables
+        deliverables = generate_all_deliverables(
+            idata=idata,
+            m_data=m_data,
+            regions=regions,
+            output_dir=self.config.models_dir,
+            log_to_mlflow=True,
+        )
+
+        logger.info(f"Generated {len(deliverables)} deliverable groups")
 
     def _evaluate(self) -> None:
         """Summarize evaluation results."""

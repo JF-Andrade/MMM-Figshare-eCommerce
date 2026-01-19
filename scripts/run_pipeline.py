@@ -66,6 +66,11 @@ Examples:
         action="store_true",
         help="Run only hierarchical model",
     )
+    parser.add_argument(
+        "--deliverables-only",
+        action="store_true",
+        help="Run only deliverables generation (requires prior training)",
+    )
 
     # Paths
     parser.add_argument(
@@ -133,9 +138,14 @@ def main() -> int:
 
     if args.baseline_only:
         skip_stages.append(PipelineStage.TRAIN_HIERARCHICAL)
+        skip_stages.append(PipelineStage.GENERATE_DELIVERABLES)
 
     if args.hierarchical_only:
         skip_stages.append(PipelineStage.TRAIN_BASELINE)
+
+    if args.deliverables_only:
+        # Only run GENERATE_DELIVERABLES stage
+        stages = [PipelineStage.GENERATE_DELIVERABLES]
 
     # Compute effective stages
     effective_stages = stages or list(PipelineStage)

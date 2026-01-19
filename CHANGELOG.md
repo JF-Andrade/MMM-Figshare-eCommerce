@@ -2,6 +2,45 @@
 
 All notable changes to the MMM project.
 
+## [2026-01-18] Pipeline Refactoring & Deliverables Fix
+
+Major refactoring to separate deliverables generation from model training, enabling quick iteration without re-running MCMC.
+
+### Pipeline Architecture
+
+| Change                            | Description                                                        | File                          |
+| --------------------------------- | ------------------------------------------------------------------ | ----------------------------- |
+| New `GENERATE_DELIVERABLES` stage | Separate stage for deliverables generation                         | `src/pipeline.py`             |
+| `--deliverables-only` flag        | Run only deliverables generation                                   | `scripts/run_pipeline.py`     |
+| Artifact saving                   | Saves `model_data.pkl`, `regions.pkl`, `idata.nc` for regeneration | `scripts/mmm_hierarchical.py` |
+
+**New Module:**
+
+- `src/deliverables.py` - Contains `generate_all_deliverables()` function with all dashboard deliverables logic
+
+### Critical Fix: Marginal ROAS
+
+| Issue                        | Fix Applied                                           | File              |
+| ---------------------------- | ----------------------------------------------------- | ----------------- |
+| Incorrect normalized spend   | Changed from `multiplier` to `x_current × multiplier` | `src/insights.py` |
+| Duplicate `k` multiplication | Removed extra `k` factor from formula                 | `src/insights.py` |
+| Missing scale conversion     | Added `1/max_spend` factor for raw spend scale        | `src/insights.py` |
+
+### Documentation Updates
+
+| Change                           | Description                                                                       | File                                |
+| -------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------- |
+| Known Limitations (README)       | Added notes on log-to-linear conversion, optimizer heuristic, What-If limitations | `README.md`                         |
+| Known Limitations (Math)         | Added detailed LaTeX explanations                                                 | `docs/model_mathematics.md`         |
+| What-If Simulator warning        | Added info box about adstock limitations                                          | `app/pages/03_What_If_Simulator.py` |
+| Removed "Potential Improvements" | Section removed from README                                                       | `README.md`                         |
+
+### New Tests
+
+- `tests/test_marginal_roas.py` - Unit tests for marginal ROAS calculation (diminishing returns, normalization, non-negativity)
+
+---
+
 ## [2026-01-05] Dashboard Reorganization & New Features
 
 Major dashboard restructuring: consolidated 10 pages into 5 focused pages with clear user journey.

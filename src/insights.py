@@ -36,6 +36,7 @@ from src.models.hierarchical_bayesian import (
     compute_marginal_roas_custom,
     compute_roi_with_hdi,
     evaluate,
+    hill_saturation_numpy,
     predict,
 )
 
@@ -234,12 +235,9 @@ def optimize_hierarchical_budget(
     Returns:
         Dict with 'allocation' and 'metrics'.
     """
-
     def hill_saturation(x, L, k):
-        eps = 1e-8
-        x_safe = max(x, eps)
-        L_safe = max(L, eps)
-        return (x_safe**k) / (L_safe**k + x_safe**k + eps)
+        """Wrapper for scalar inputs using imported function."""
+        return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
 
     # 1. Prepare Data - extract L and k from saturation params
     model_data = []
@@ -382,12 +380,9 @@ def optimize_budget_by_territory(
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
 ) -> dict:
     """Optimize budget allocation for a SINGLE TERRITORY."""
-
     def hill_saturation(x, L, k):
-        eps = 1e-8
-        x_safe = max(x, eps)
-        L_safe = max(L, eps)
-        return (x_safe**k) / (L_safe**k + x_safe**k + eps)
+        """Wrapper for scalar inputs using imported function."""
+        return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
 
     if contrib_territory_df.empty or not saturation_params:
         return {"allocation": [], "metrics": {"territory": territory, "success": False}}
@@ -812,15 +807,24 @@ def compute_marginal_roas(
     spend_increase_pcts: list[float] | None = None,
 ) -> list[dict]:
     """
-    Compute marginal ROAS at different spend levels.
+    Compute marginal ROAS at varying spend levels.
     
-    Marginal ROAS = dContribution / dSpend at a given spend level.
-    Uses derivative of Hill function: d/dx [x^k / (L^k + x^k)]
+    Marginal ROAS quantifies the incremental revenue return per additional 
+    unit of advertising expenditure. The calculation employs the first 
+    derivative of the Hill saturation function.
+    
+    Mathematical formulation:
+        Given R(S) = β × S^k / (L^k + S^k), the marginal response is:
+        
+        dR/dS = β × k × L^k × S^(k-1) / (L^k + S^k)^2
+        
+        For normalized spend (S_norm = S_raw / S_max):
+        MROAS = dR/dS_norm × (1 / S_max)
     
     Args:
-        contributions_df: DataFrame with 'channel', 'total_spend', 'contribution'.
-        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
-        spend_increase_pcts: List of spend increase percentages to evaluate.
+        contributions_df: DataFrame containing 'channel', 'total_spend', 'contribution'.
+        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean', 'max_spend'.
+        spend_increase_pcts: Spend variation percentages to evaluate (default: -30 to +100).
     
     Returns:
         List of dicts with 'channel', 'spend_increase_pct', 'marginal_roas'.
@@ -828,9 +832,7 @@ def compute_marginal_roas(
     if spend_increase_pcts is None:
         spend_increase_pcts = [-30, -20, -10, 0, 10, 20, 30, 50, 75, 100]
     
-    # Build param lookup
     param_lookup = {p["channel"]: p for p in saturation_params}
-    
     results = []
     
     for _, row in contributions_df.iterrows():
@@ -844,33 +846,42 @@ def compute_marginal_roas(
         
         L = params["L_mean"]
         k = params["k_mean"]
+        max_spend = params.get("max_spend", base_spend)
         
-        # Current normalized spend (assuming max = 1 for simplicity)
-        # In practice, x_norm = spend / max_spend
-        base_roi = base_contribution / max(base_spend, 1e-8)
+        # Compute normalized current spend
+        x_current = base_spend / max_spend if max_spend > 0 else 0.5
+        
+        # Estimate β from current observation: β = Contribution / S(x_current)
+        s_current = (x_current ** k) / (L ** k + x_current ** k + 1e-8)
+        beta = base_contribution / (s_current + 1e-8)
         
         for pct in spend_increase_pcts:
             multiplier = 1 + pct / 100.0
             new_spend = base_spend * multiplier
             
-            # Hill derivative: d/dx [x^k / (L^k + x^k)] = k * L^k * x^(k-1) / (L^k + x^k)^2
-            # At normalized spend x:
-            x = max(multiplier, 0.01)  # Use multiplier as proxy for normalized change
+            # Compute new normalized spend (FIX #1: use x_current × multiplier)
+            x_new = x_current * multiplier
             
-            numerator = k * (L ** k) * (x ** (k - 1))
-            denominator = (L ** k + x ** k) ** 2
-            hill_derivative = numerator / (denominator + 1e-8)
+            # Hill derivative: dS/dx = k × L^k × x^(k-1) / (L^k + x^k)^2
+            numerator = k * (L ** k) * (x_new ** (k - 1) + 1e-12)
+            denominator = (L ** k + x_new ** k) ** 2 + 1e-8
+            dS_dx = numerator / denominator
             
-            # Marginal ROAS = base ROI * relative derivative effect
-            # Scale by base contribution behavior
-            marginal_roas = base_roi * hill_derivative * k
+            # Marginal ROAS: dR/dS_raw = β × dS/dx × (1/max_spend)
+            # FIX #2: removed duplicate k multiplication
+            mroas = beta * dS_dx / max_spend if max_spend > 0 else 0
+            
+            # Compute saturation at new spend level
+            s_new = (x_new ** k) / (L ** k + x_new ** k + 1e-8)
             
             results.append({
                 "channel": channel,
                 "spend_increase_pct": pct,
                 "current_spend": float(base_spend),
                 "new_spend": float(new_spend),
-                "marginal_roas": float(marginal_roas),
+                "marginal_roas": float(mroas),
+                "saturation_current": float(s_current),
+                "saturation_new": float(s_new),
             })
     
     return results

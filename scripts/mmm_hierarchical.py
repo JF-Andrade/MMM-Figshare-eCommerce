@@ -20,6 +20,7 @@ import pymc as pm
 import pytensor
 from sklearn.preprocessing import StandardScaler
 import tempfile
+import pickle
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -61,15 +62,11 @@ from src.models.hierarchical_bayesian import (
     check_convergence as check_custom_convergence,
     predict as predict_custom,
     evaluate as evaluate_custom,
-    compute_channel_contributions,
-    compute_roi_with_hdi,
 )
+from src.deliverables import generate_all_deliverables
 from src.insights import (
-    optimize_hierarchical_budget,
     plot_regional_comparison,
     plot_roi_heatmap,
-    plot_saturation_curves_hierarchical,
-    log_marginal_roas,
 )
 
 if TYPE_CHECKING:
@@ -556,321 +553,56 @@ def run_hierarchical(
         )
         print("Saved predictions.json")
         
-        # 6. Contributions and ROI
-        print("\nComputing contributions...")
-        contrib_df = compute_channel_contributions(
-            idata, 
-            m_data["X_spend_train"],
-            m_data["territory_idx_train"],
-            m_data["channel_names"]
-        )
+        # =====================================================================
+        # SAVE MODEL ARTIFACTS FOR DELIVERABLES REGENERATION
+        # =====================================================================
+        print("\nSaving model artifacts for deliverables regeneration...")
+        output_dir.mkdir(exist_ok=True, parents=True)
         
-        # FIX: Convert contributions from log scale to linear $ scale
-        # Model predicts y_log, so contributions are in log units
-        total_revenue = m_data["df_train"][TARGET_COL].sum()
-        mean_log_revenue = m_data["df_train"]["y_log"].mean()
-        n_obs_train = len(m_data["df_train"])
+        # Save idata (InferenceData)
+        idata.to_netcdf(output_dir / "idata.nc")
+        mlflow.log_artifact(str(output_dir / "idata.nc"), "model")
         
-        contrib_df["contribution_log"] = contrib_df["contribution"]
-        contrib_df["contribution"] = contrib_df["contribution_log"] * (total_revenue / (mean_log_revenue * n_obs_train + 1e-8))
+        # Save model_data dict (for deliverables regeneration)
+        with open(output_dir / "model_data.pkl", "wb") as f:
+            pickle.dump(m_data, f)
+        mlflow.log_artifact(str(output_dir / "model_data.pkl"), "model")
         
-        # Override total_spend with raw spend (not normalized)
-        spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
-        for i, raw_col in enumerate(spend_cols_raw):
-            if raw_col in m_data["df_train"].columns:
-                contrib_df.loc[i, "total_spend"] = m_data["df_train"][raw_col].sum()
+        # Save regions list
+        with open(output_dir / "regions.pkl", "wb") as f:
+            pickle.dump(regions, f)
+        mlflow.log_artifact(str(output_dir / "regions.pkl"), "model")
         
-        # Recalculate ROI with correct scale
-        contrib_df["roi"] = contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
+        print("   Saved idata.nc, model_data.pkl, regions.pkl")
         
-        # Add contribution percentage
-        contrib_df["contribution_pct"] = contrib_df["contribution"] / contrib_df["contribution"].sum()
+        # Also save legacy trace file for backward compatibility
+        idata.to_netcdf(output_dir / "mmm_hierarchical_trace.nc")
+        mlflow.log_artifact(str(output_dir / "mmm_hierarchical_trace.nc"))
         
-        print(f"   Total revenue: {total_revenue:,.0f}")
-        print(f"   Contribution range: {contrib_df['contribution'].min():,.0f} to {contrib_df['contribution'].max():,.0f}")
-        
-        # Log contributions
-        mlflow.log_dict({"contributions": contrib_df.to_dict(orient="records")}, "deliverables/contributions.json")
-
-        # Log ROI (re-using columns from contrib_df)
-        roi_data = contrib_df[["channel", "roi", "total_spend", "contribution"]].to_dict(orient="records")
-        mlflow.log_dict({"roi": roi_data}, "deliverables/roi.json")
-        
-        # Note: log_marginal_roas called after saturation_params is computed
-        
-        # Iterate over actual regions to compute specific metrics
-        print("\nComputing regional metrics...")
-        regional_data_list = []
-        
-        # Scale factors for log→linear conversion (region level)
-        scale_factor = total_revenue / (mean_log_revenue * n_obs_train + 1e-8)
-        
-        # In build logic, 'territory_idx' maps 0..N-1 to regions list order.
-        for r_idx, region_name in enumerate(regions):
-            try:
-                # Isolate observations for this territory
-                mask = (m_data["territory_idx_train"] == r_idx)
-                if not np.any(mask):
-                    continue
-                    
-                # Filter data
-                X_sub = m_data["X_spend_train"][mask]
-                idx_sub = m_data["territory_idx_train"][mask]
-                df_sub = m_data["df_train"].iloc[np.where(mask)[0]]
-                
-                # Compute contributions for this region
-                # compute_channel_contributions handles the beta_territory lookup using idx_sub
-                reg_contrib_df = compute_channel_contributions(
-                    idata,
-                    X_sub,
-                    idx_sub,
-                    m_data["channel_names"]
-                )
-                
-                # FIX: Convert log→linear and use raw spend for ROI
-                reg_contrib_df["contribution"] = reg_contrib_df["contribution"] * scale_factor
-                
-                for i, raw_col in enumerate(spend_cols_raw):
-                    if raw_col in df_sub.columns:
-                        reg_contrib_df.loc[i, "total_spend"] = df_sub[raw_col].sum()
-                
-                reg_contrib_df["roi"] = reg_contrib_df["contribution"] / (reg_contrib_df["total_spend"] + 1e-8)
-                
-                # Add percentage
-                if reg_contrib_df["contribution"].sum() > 0:
-                    reg_contrib_df["contribution_pct"] = reg_contrib_df["contribution"] / reg_contrib_df["contribution"].sum()
-                else:
-                    reg_contrib_df["contribution_pct"] = 0.0
-                
-                # FIX: Flatten structure (avoid nested 'channels' that causes [object Object])
-                for ch_row in reg_contrib_df.to_dict(orient="records"):
-                    regional_data_list.append({
-                        "region": region_name,
-                        **ch_row
-                    })
-            except Exception as e:
-                print(f"Warning: Failed to compute metrics for region {region_name}: {e}")
-
-        mlflow.log_dict({"regional": regional_data_list}, "deliverables/regional.json")
-        
-        # Log Adstock/Saturation Params (Global + Territory)
-        # NOTE: Model uses L_channel (half-saturation) and k_channel (steepness)
-        summary = az.summary(idata, var_names=["alpha_channel", "L_channel", "k_channel"])
-        adstock_params = []
-        saturation_params = []
-        
-        for channel in m_data["channel_names"]:
-            try:
-                # az.summary uses channel names as index, not numeric indices
-                alpha = summary.loc[f"alpha_channel[{channel}]", "mean"]
-                L = summary.loc[f"L_channel[{channel}]", "mean"]
-                k = summary.loc[f"k_channel[{channel}]", "mean"]
-                
-                # Calculate half-life from alpha: t_half = log(0.5) / log(alpha)
-                half_life = float(np.log(0.5) / (np.log(alpha) + 1e-8)) if alpha > 0 else 0.0
-                
-                # Compute max_spend from training data raw spend column
-                raw_spend_col = f"{channel}_SPEND"
-                if raw_spend_col in m_data["df_train"].columns:
-                    max_spend = float(m_data["df_train"][raw_spend_col].max())
-                else:
-                    max_spend = None
-                
-                adstock_params.append({
-                    "channel": channel, 
-                    "alpha_mean": float(alpha),
-                    "half_life_weeks": half_life
-                })
-                saturation_params.append({
-                    "channel": channel, 
-                    "L_mean": float(L),
-                    "k_mean": float(k),
-                    "lam_mean": float(1.0 / (L + 1e-8)),
-                    "max_spend": max_spend
-                })
-            except KeyError as e:
-                print(f"Warning: Could not find parameter for {channel}: {e}")
-        
-        print(f"   Extracted global params for {len(adstock_params)} channels")
-        
-        # Extract TERRITORY-LEVEL parameters
-        alpha_territory = idata.posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
-        L_territory = idata.posterior["L_territory"].mean(dim=["chain", "draw"]).values
-        k_channel_values = idata.posterior["k_channel"].mean(dim=["chain", "draw"]).values
-        
-        adstock_territory_params = []
-        saturation_territory_params = []
-        
-        for t_idx, territory in enumerate(regions):
-            for c_idx, channel in enumerate(m_data["channel_names"]):
-                adstock_territory_params.append({
-                    "territory": territory,
-                    "channel": channel,
-                    "alpha_mean": float(alpha_territory[t_idx, c_idx]),
-                })
-                saturation_territory_params.append({
-                    "territory": territory,
-                    "channel": channel,
-                    "L_mean": float(L_territory[t_idx, c_idx]),
-                    "k_mean": float(k_channel_values[c_idx]),
-                })
-        
-        # Save global params
-        mlflow.log_dict({"adstock": adstock_params}, "deliverables/adstock.json")
-        mlflow.log_dict({"saturation": saturation_params}, "deliverables/saturation.json")
-        
-        # Save territory params
-        mlflow.log_dict({"adstock_territory": adstock_territory_params}, "deliverables/adstock_territory.json")
-        mlflow.log_dict({"saturation_territory": saturation_territory_params}, "deliverables/saturation_territory.json")
-        print(f"Saved territory parameters for {len(regions)} regions x {len(m_data['channel_names'])} channels")
-
-        # Log marginal ROAS analysis (must be after saturation_params is computed)
-        marginal_roas_data = log_marginal_roas(contrib_df, saturation_params)
-
-        # 6. Compute Efficiency Metrics (iROAS, CAC, Attribution)
-        # Uses the model's contribution estimates + AOV approach
-        print("\nComputing Channel Efficiency Metrics...")
-        from src.insights import compute_channel_metrics, compute_blended_metrics
-        
-        # Calculate AOV from training data (total_revenue already computed in section 5)
-        transaction_col = [c for c in m_data["df_train"].columns if "transaction" in c.lower()]
-        total_transactions = m_data["df_train"][transaction_col[0]].sum() if transaction_col else 1
-        aov = total_revenue / total_transactions if total_transactions > 0 else 100
-        
-        channel_metrics = compute_channel_metrics(contrib_df, aov=aov)
-        blended = compute_blended_metrics(contrib_df)
-        
-        mlflow.log_dict({"channel_metrics": channel_metrics}, "deliverables/channel_metrics.json")
-        mlflow.log_dict(blended, "deliverables/blended_metrics.json")
-        
-        # 7. ROI HDI (Probabilistic)
-        # ROI with HDI already comes from compute_roi_with_hdi in hierarchical_bayesian.py
-        print("\nComputing ROI HDI...")
-        roi_hdi_df = compute_roi_with_hdi(
+        # =====================================================================
+        # GENERATE ALL DELIVERABLES
+        # =====================================================================
+        deliverables = generate_all_deliverables(
             idata=idata,
-            X_spend=m_data["X_spend_train"],
-            territory_idx=m_data["territory_idx_train"],
-            channel_names=m_data["channel_names"],
-            hdi_prob=0.94
-        )
-        mlflow.log_dict(
-            {"roi_hdi": roi_hdi_df.to_dict(orient="records")},
-            "deliverables/roi_hdi.json"
-        )
-        print(f"ROI HDI computed for {len(roi_hdi_df)} channels")
-
-        
-        # 8. Saturation Curves Visualization
-        print("\nGenerating saturation curves plot...")
-        sat_curves_path = output_dir / "saturation_curves.png"
-        plot_saturation_curves_hierarchical(
-            saturation_params=saturation_params,
-            output_path=sat_curves_path,
-        )
-        mlflow.log_artifact(str(sat_curves_path), "diagnostics")
-
-        # Log Optimization
-        # Calculate total spend from contribution dataframe
-        total_budget_current = contrib_df["total_spend"].sum()
-        n_obs_train = len(m_data["X_spend_train"])
-        
-        # Optimize budget (reallocate within +/- 30% bounds)
-        # Pass marginal_roas_data for accurate lift calculation
-        from src.insights import optimize_hierarchical_budget
-        optimization_result = optimize_hierarchical_budget(
-            contrib_df=contrib_df,
-            saturation_params=saturation_params,
-            total_budget=total_budget_current,
-            n_obs=n_obs_train,
-            budget_bounds_pct=(0.70, 1.30),
-            marginal_roas_data=marginal_roas_data,
+            m_data=m_data,
+            regions=regions,
+            output_dir=output_dir,
+            log_to_mlflow=True,
         )
         
-        # Extract results
-        optimization_data = optimization_result["allocation"]
-        lift_metrics = optimization_result["metrics"]
-        
-        mlflow.log_dict({"optimization": optimization_data}, "deliverables/optimization.json")
-        mlflow.log_dict({"revenue_lift": lift_metrics}, "deliverables/revenue_lift.json")
-
-        # 9b. Optimize Budget BY TERRITORY
-        print("\nComputing optimization by territory...")
-        from src.insights import optimize_budget_by_territory
-        from src.models.hierarchical_bayesian import compute_channel_contributions_by_territory
-        
-        # Get contributions by territory
-        contrib_by_territory_df = compute_channel_contributions_by_territory(
-            idata,
-            m_data["X_spend_train"],
-            m_data["territory_idx_train"],
-            m_data["channel_names"],
-            regions,
-        )
-        
-        # Convert territory contributions from log scale to linear $ scale
-        contrib_by_territory_df["contribution_log"] = contrib_by_territory_df["contribution"]
-        contrib_by_territory_df["contribution"] = contrib_by_territory_df["contribution_log"] * scale_factor
-        
-        # Override total_spend with raw spend per territory (not normalized)
-        spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
-        df_train = m_data["df_train"]
-        
-        for idx, row in contrib_by_territory_df.iterrows():
-            territory = row["territory"]
-            channel = row["channel"]
-            raw_col = f"{channel}_SPEND"
-            if raw_col in df_train.columns:
-                terr_mask = df_train[GEO_COL] == territory
-                raw_spend = df_train.loc[terr_mask, raw_col].sum()
-                contrib_by_territory_df.loc[idx, "total_spend"] = float(raw_spend)
-        
-        # Recalculate ROI with correct scale
-        contrib_by_territory_df["roi"] = contrib_by_territory_df["contribution"] / (contrib_by_territory_df["total_spend"] + 1e-8)
-        
-        mlflow.log_dict(
-            {"contributions_territory": contrib_by_territory_df.to_dict(orient="records")},
-            "deliverables/contributions_territory.json"
-        )
-        
-        # Optimize for each territory
-        optimization_by_territory = []
-        lift_by_territory = []
-        
-        for territory in regions:
-            terr_contrib = contrib_by_territory_df[contrib_by_territory_df["territory"] == territory]
-            terr_sat_params = [p for p in saturation_territory_params if p["territory"] == territory]
-            
-            terr_opt = optimize_budget_by_territory(
-                contrib_territory_df=terr_contrib,
-                saturation_params=terr_sat_params,
-                territory=territory,
-            )
-            optimization_by_territory.extend(terr_opt["allocation"])
-            if terr_opt["metrics"].get("success"):
-                lift_by_territory.append(terr_opt["metrics"])
-        
-        mlflow.log_dict({"optimization_territory": optimization_by_territory}, "deliverables/optimization_territory.json")
-        mlflow.log_dict({"lift_by_territory": lift_by_territory}, "deliverables/lift_by_territory.json")
-        print(f"Optimization completed for {len(lift_by_territory)} territories")
-
-        # Save deliverables
+        # Validate and save summary
         run_id = mlflow.active_run().info.run_id
-        
-        # Aggregate ROI/Contribution for schema validation
-        # The schema expects spend, contribution, roi per channel (now computed correctly)
         validated = validate_and_save_deliverables(
             run_id=run_id,
             metrics=combined_metrics,
-            roi_df=contrib_df.assign(region="Global", spend=contrib_df["total_spend"]),
+            roi_df=pd.DataFrame(deliverables["contributions"]).assign(
+                region="Global", 
+                spend=lambda df: df["total_spend"]
+            ),
             regions=regions,
             channels=m_data["channel_names"],
         )
         mlflow.log_dict(validated, "deliverables/validated.json")
-
-        # Save trace
-        output_dir.mkdir(exist_ok=True, parents=True)
-        idata.to_netcdf(output_dir / "mmm_hierarchical_trace.nc")
-        mlflow.log_artifact(output_dir / "mmm_hierarchical_trace.nc")
 
     print("\n" + "=" * 60)
     print("CUSTOM HIERARCHICAL MODEL COMPLETE")

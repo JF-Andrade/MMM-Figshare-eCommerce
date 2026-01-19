@@ -107,6 +107,12 @@ def main():
     deliverables = shared_sidebar()
     page_header("What-If Budget Simulator", "Drag sliders to simulate budget reallocation")
 
+    st.info(
+        "**Note:** This simulator projects returns via Hill saturation curves. "
+        "Carryover (adstock) effects from modified allocations are not explicitly "
+        "re-simulated. Best suited for short-term scenarios (1-4 weeks)."
+    )
+
     if not deliverables:
         st.warning("No model data available. Run the hierarchical model first.")
         return

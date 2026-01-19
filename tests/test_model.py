@@ -15,6 +15,7 @@ def mock_model_data():
     n_season = 4
     n_territories = 4
 
+    np.random.seed(42)
     X_spend = np.random.uniform(0, 1000, (n_obs, n_channels))
     X_features = np.random.normal(0, 1, (n_obs, n_features))
     X_season = np.random.normal(0, 1, (n_obs, n_season))
@@ -56,25 +57,25 @@ def test_build_hierarchical_mmm_contains_expected_vars(mock_model_data):
     assert any("alpha_channel" in name for name in var_names)
     assert any("beta_channel" in name for name in var_names)
     assert any("sigma_alpha" in name for name in var_names)
-    assert any("L_channel_raw" in name for name in var_names)
+    assert any("L_channel" in name for name in var_names)
     assert any("y_obs" in name for name in [v.name for v in model.observed_RVs])
 
 
-def test_build_hierarchical_mmm_with_student_t(mock_model_data):
-    """Test that student-t likelihood option works."""
-    # Use student-t
-    model_t = build_hierarchical_mmm(**mock_model_data, use_student_t=True)
-    obs_t = [v for v in model_t.observed_RVs if v.name == "y_obs"][0]
+def test_build_hierarchical_mmm_uses_student_t(mock_model_data):
+    """Test that the model uses Student-T likelihood with nu parameter."""
+    model = build_hierarchical_mmm(**mock_model_data)
     
-    # Nu parameter should exist
-    var_names = [v.name for v in model_t.free_RVs]
-    assert any("nu" in name for name in var_names)
+    # Nu parameter should exist (Student-T is always used)
+    var_names = [v.name for v in model.free_RVs]
+    assert any("nu" in name for name in var_names), (
+        "Student-T likelihood requires 'nu' parameter"
+    )
 
 
 def test_build_hierarchical_mmm_input_validation(mock_model_data):
-    """Test basic input validation assertions."""
+    """Test basic input validation."""
     bad_data = mock_model_data.copy()
     bad_data["territory_idx"] = bad_data["territory_idx"][:-1]  # Wrong length
     
-    with pytest.raises(AssertionError, match="territory_idx length mismatch"):
+    with pytest.raises(ValueError, match="territory_idx length"):
         build_hierarchical_mmm(**bad_data)
