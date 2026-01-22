@@ -81,12 +81,25 @@ streamlit run app/Home.py
 
 ### Deliverables (MLflow)
 
-All raw data and intermediate files are stored in MLflow artifacts:
+All results are stored in MLflow artifacts. Model training and deliverables generation are now decoupled, allowing for quick iteration on dashboard metrics without re-training:
 
 - `roi.json` / `roi_hierarchical.csv` - ROI aggregated metrics
+- `revenue_lift.json` - Projected revenue growth from optimal reallocation
 - `optimization.json` - Budget allocation recommendations
-- `saturation_curves.png` - Visual proof of diminishing returns
-- `predictions.json` - Detailed actual vs predicted time series for all territories
+- `marginal_roas.json` - Diminishing returns analysis (Marginal ROAS curves)
+- `predictions.json` - Detailed actual vs predicted time series
+
+> **Tip:** Use `--deliverables-only` to regenerate artifacts using a previously trained model.
+
+---
+
+## Normalization & Scale Integrity
+
+To ensure accurate cross-region and cross-currency comparisons, the model uses **currency-aware normalization**:
+
+1. Spend is normalized internally (0-1) based on the maximum weekly spend per channel/currency during training.
+2. The learned parameters (`L`, `k`) are tied to this normalized scale.
+3. The optimization engine uses the training-stage `max_spend` to maintain consistent scale when calculating Marginal ROAS and Projected Lift.
 
 ---
 

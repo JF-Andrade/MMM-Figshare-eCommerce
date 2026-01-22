@@ -18,11 +18,11 @@
 
 ## scripts/
 
-| Script                | Scope / Purpose                              |
-| --------------------- | -------------------------------------------- |
-| `run_pipeline.py`     | CLI entry point, orchestrates full pipeline  |
-| `mmm_baseline.py`     | Baseline model training + MLflow logging     |
-| `mmm_hierarchical.py` | Hierarchical model training + MLflow logging |
+| Script                | Scope / Purpose                                                          |
+| --------------------- | ------------------------------------------------------------------------ |
+| `run_pipeline.py`     | CLI entry point, orchestrates full pipeline                              |
+| `mmm_baseline.py`     | Baseline model training + MLflow logging                                 |
+| `mmm_hierarchical.py` | Hierarchical model training + Artifact saving (no internal deliverables) |
 
 **Rule:** Scripts should only contain:
 

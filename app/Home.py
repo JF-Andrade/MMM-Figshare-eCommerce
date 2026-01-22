@@ -53,8 +53,8 @@ def main():
         else:
             st.warning("No model runs found. Run the pipeline first.")
             return
-    except Exception:
-        st.warning("Could not load model info.")
+    except Exception as e:
+        st.warning(f"Could not load model info: {e}")
         return
 
     st.markdown("---")

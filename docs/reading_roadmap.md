@@ -54,6 +54,7 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 | 16  | [scripts/run_pipeline.py](file:///d:/Projects/MMM-Figshare-eCommerce/scripts/run_pipeline.py) | CLI para executar o pipeline                          |
 
 > **Nota:** Use `--deliverables-only` para regenerar deliverables sem re-treinar.
+> **Status:** Auditoria de escala e lift 0% concluída (2026-01-19).
 
 ---
 
