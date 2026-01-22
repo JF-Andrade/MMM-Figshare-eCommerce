@@ -222,23 +222,36 @@ def optimize_hierarchical_budget(
     """
     Optimize budget allocation using learned Hill saturation parameters.
     
-    Uses marginal_roas data from the pipeline for accurate lift calculation.
+    Computes lift using exact Hill saturation difference (not marginal ROAS
+    point estimate) for accurate projections.
 
     Args:
         contrib_df: DataFrame with 'channel', 'total_spend', 'contribution'.
-        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean'.
+        saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean', 'max_spend'.
+            CRITICAL: max_spend must match the normalization used during training.
         total_budget: Total money to allocate (sum across all obs).
         n_obs: Number of observations (weeks) - for scale normalization.
         budget_bounds_pct: Min/Max multiplier for individual channel spend.
-        marginal_roas_data: Pre-computed marginal ROAS at different spend levels.
+        marginal_roas_data: Pre-computed marginal ROAS (optional, used for reporting).
 
     Returns:
         Dict with 'allocation' and 'metrics'.
+    
+    Raises:
+        ValueError: If saturation_params missing required 'max_spend' field.
     """
     def hill_saturation(x, L, k):
         """Wrapper for scalar inputs using imported function."""
         return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
 
+    # 0. Validate saturation params have required max_spend (FIX #2)
+    for p in saturation_params:
+        if "max_spend" not in p or p["max_spend"] <= 0:
+            raise ValueError(
+                f"Channel '{p.get('channel', 'unknown')}' missing valid 'max_spend'. "
+                "This must match the normalization used during model training."
+            )
+    
     # 1. Prepare Data - extract L and k from saturation params
     model_data = []
     param_map = {p["channel"]: p for p in saturation_params}
@@ -251,22 +264,39 @@ def optimize_hierarchical_budget(
 
         L = params.get("L_mean", 0.3)
         k = params.get("k_mean", 2.0)
+        max_spend = params["max_spend"]  # Required field now
 
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
+        
+        # Normalize spend to [0,1] scale (L and k were calibrated on normalized data)
+        avg_spend_norm = avg_spend / max_spend if max_spend > 0 else 0.5
 
         if total_spend <= 0 or contribution <= 0:
+            # FIX #10: Handle negative/zero contribution gracefully
+            # These channels cannot be optimized properly (would imply infinite ROAS or destruction)
+            # We fix them at current spend in the optimizer by setting bounds = current
             model_data.append({
                 "channel": ch,
-                "scale": 0,
+                "scale": 0,  # Zero scale means objective function ignores it
                 "L": L,
                 "k": k,
                 "current_spend": total_spend,
                 "avg_spend": avg_spend,
+                "max_spend": max_spend,
+                "is_fixed": True  # Flag to fix this channel
             })
             continue
 
-        sat_current = hill_saturation(avg_spend, L, k)
-        scale = contribution / (n_obs * sat_current + 1e-9)
+        # Use normalized spend for Hill saturation  
+        sat_current = hill_saturation(avg_spend_norm, L, k)
+        
+        # Avoid division by zero if saturation is tiny
+        if sat_current < 1e-9:
+             scale = 0
+             is_fixed = True
+        else:
+             scale = contribution / (n_obs * sat_current)
+             is_fixed = False
 
         model_data.append({
             "channel": ch,
@@ -275,15 +305,20 @@ def optimize_hierarchical_budget(
             "k": k,
             "current_spend": total_spend,
             "avg_spend": avg_spend,
+            "max_spend": max_spend,
+            "is_fixed": is_fixed
         })
 
-    # 2. Objective Function using Hill saturation
+    # 2. Objective Function using Hill saturation (with normalized spend)
     def objective(avg_spends):
         total_contrib = 0
         for i, avg_x in enumerate(avg_spends):
             m = model_data[i]
             if m["scale"] > 0:
-                sat = hill_saturation(avg_x, m["L"], m["k"])
+                # Normalize spend before Hill function
+                max_sp = m.get("max_spend", 1)
+                avg_x_norm = avg_x / max_sp if max_sp > 0 else avg_x
+                sat = hill_saturation(avg_x_norm, m["L"], m["k"])
                 total_contrib += m["scale"] * n_obs * sat
         return -total_contrib
 
@@ -297,7 +332,11 @@ def optimize_hierarchical_budget(
     bounds_list = []
     for m in model_data:
         current_avg = m["avg_spend"]
-        if current_avg > 0:
+        
+        # FIX #10: If channel is fixed (e.g. negative contribution), lock it to current spend
+        if m.get("is_fixed", False):
+            lb, ub = current_avg, current_avg
+        elif current_avg > 0:
             lb = current_avg * budget_bounds_pct[0]
             ub = current_avg * budget_bounds_pct[1]
         else:
@@ -305,16 +344,46 @@ def optimize_hierarchical_budget(
         bounds_list.append((lb, ub))
 
     # 4. Optimize
-    result = minimize(
-        objective,
-        x0,
-        method="SLSQP",
-        constraints=[linear_constraint],
-        bounds=bounds_list,
-        options={"disp": False, "ftol": 1e-6},
-    )
+    # 4. Optimize
+    try:
+        initial_fun = objective(x0)
+        
+        result = minimize(
+            objective,
+            x0,
+            method="SLSQP",
+            constraints=[linear_constraint],
+            bounds=bounds_list,
+            options={"disp": False, "ftol": 1e-6, "maxiter": 100},
+        )
+        
+        # FIX #11: SLSQP often returns Exit Mode 8 (Positive directional derivative) for complex MMMs
+        # This is strictly a "failure" but usually contains a valid, better solution.
+        # We accept the result if it improves the objective function.
+        if result.success:
+            success = True
+            optimized_x = result.x
+        else:
+            final_fun = result.fun
+            if final_fun < initial_fun:
+                print(f"Warning: Optimization finished with status '{result.message}' but improved objective. Accepting result.")
+                success = True
+                optimized_x = result.x
+            else:
+                print(f"Warning: Optimization failed ({result.message}) and did not improve. Returning current allocation.")
+                success = False
+                optimized_x = x0
+
+    except Exception as e:
+        print(f"Warning: Optimization crashed ({e}). Returning current allocation.")
+        success = False
+        optimized_x = x0
 
     # 5. Format Results and Calculate Lift using Marginal ROAS
+    optimized_allocation = []
+    
+    # Use fallback if optimization failed
+    final_spends = optimized_x if success else x0
     optimized_allocation = []
     
     # Build marginal ROAS lookup: {channel: {spend_increase_pct: marginal_roas}}
@@ -332,7 +401,9 @@ def optimize_hierarchical_budget(
     lift_absolute = 0.0
 
     for i, m in enumerate(model_data):
-        opt_avg = result.x[i] if result.success else m["avg_spend"]
+        # Use robust final spends (from optimization or fallback)
+        opt_avg = final_spends[i]
+        
         opt_total = opt_avg * n_obs
         current_total = m["current_spend"]
         delta_spend = opt_total - current_total
@@ -341,14 +412,27 @@ def optimize_hierarchical_budget(
             (delta_spend / current_total * 100) if current_total > 0 else 0.0
         )
 
-        # Calculate lift contribution using marginal ROAS
-        if delta_spend != 0 and m["channel"] in mroas_lookup:
-            ch_mroas = mroas_lookup[m["channel"]]
-            # Find closest spend_increase_pct and interpolate
-            pct_levels = sorted(ch_mroas.keys())
-            closest_pct = min(pct_levels, key=lambda x: abs(x - change_pct))
-            marginal_roas = ch_mroas.get(closest_pct, 0)
-            lift_absolute += marginal_roas * delta_spend
+        # FIX #7: Calculate lift using exact Hill saturation difference
+        # instead of marginal ROAS point estimate
+        if delta_spend != 0 and m["scale"] > 0:
+            max_sp = m["max_spend"]
+            L, k = m["L"], m["k"]
+            
+            # Current and optimal normalized spend
+            x_curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else 0.5
+            x_opt_norm = opt_avg / max_sp if max_sp > 0 else 0.5
+            
+            # Clamp to avoid extrapolation beyond 2x max historical spend
+            x_opt_norm = min(x_opt_norm, 2.0)
+            
+            # Saturation at current and optimal points
+            s_curr = hill_saturation(x_curr_norm, L, k)
+            s_opt = hill_saturation(x_opt_norm, L, k)
+            
+            # Lift = scale × n_obs × (S_opt - S_curr)
+            # This is EXACT, not a first-order approximation
+            lift_channel = m["scale"] * n_obs * (s_opt - s_curr)
+            lift_absolute += lift_channel
 
         optimized_allocation.append({
             "channel": m["channel"],
@@ -379,7 +463,14 @@ def optimize_budget_by_territory(
     territory: str,
     budget_bounds_pct: tuple[float, float] = (0.70, 1.30),
 ) -> dict:
-    """Optimize budget allocation for a SINGLE TERRITORY."""
+    """
+    Optimize budget allocation for a SINGLE TERRITORY.
+    
+    Uses exact Hill saturation difference for lift calculation.
+    
+    Raises:
+        ValueError: If n_obs column missing or invalid.
+    """
     def hill_saturation(x, L, k):
         """Wrapper for scalar inputs using imported function."""
         return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
@@ -387,11 +478,16 @@ def optimize_budget_by_territory(
     if contrib_territory_df.empty or not saturation_params:
         return {"allocation": [], "metrics": {"territory": territory, "success": False}}
 
-    n_obs = (
-        int(contrib_territory_df["n_obs"].iloc[0])
-        if "n_obs" in contrib_territory_df.columns
-        else 1
-    )
+    # FIX #5: Validate n_obs is present and valid
+    if "n_obs" not in contrib_territory_df.columns:
+        raise ValueError(
+            f"Territory '{territory}' contrib_df missing 'n_obs' column. "
+            "Ensure compute_channel_contributions_by_territory() output is used."
+        )
+    n_obs = int(contrib_territory_df["n_obs"].iloc[0])
+    if n_obs <= 0:
+        raise ValueError(f"Territory '{territory}' has n_obs={n_obs}, must be > 0")
+    
     param_map = {p["channel"]: p for p in saturation_params}
 
     model_data = []
@@ -403,12 +499,16 @@ def optimize_budget_by_territory(
 
         L = params.get("L_mean", 0.3)
         k = params.get("k_mean", 2.0)
+        # Use max_spend from params with fallback to total_spend
+        max_spend = params.get("max_spend", total_spend) if params.get("max_spend", 0) > 0 else total_spend
+        
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
+        avg_spend_norm = avg_spend / max_spend if max_spend > 0 else 0.5
 
         if total_spend <= 0 or contribution <= 0:
             scale = 0
         else:
-            sat_current = hill_saturation(avg_spend, L, k)
+            sat_current = hill_saturation(avg_spend_norm, L, k)
             scale = contribution / (n_obs * sat_current + 1e-9)
 
         model_data.append({
@@ -418,6 +518,7 @@ def optimize_budget_by_territory(
             "k": k,
             "current_spend": total_spend,
             "avg_spend": avg_spend,
+            "max_spend": max_spend,
         })
 
     def objective(avg_spends):
@@ -425,7 +526,9 @@ def optimize_budget_by_territory(
         for i, avg_x in enumerate(avg_spends):
             m = model_data[i]
             if m["scale"] > 0:
-                sat = hill_saturation(avg_x, m["L"], m["k"])
+                max_sp = m.get("max_spend", 1)
+                avg_x_norm = avg_x / max_sp if max_sp > 0 else avg_x
+                sat = hill_saturation(avg_x_norm, m["L"], m["k"])
                 total_contrib += m["scale"] * n_obs * sat
         return -total_contrib
 
@@ -466,8 +569,11 @@ def optimize_budget_by_territory(
         )
 
         if m["scale"] > 0:
-            curr_c = m["scale"] * n_obs * hill_saturation(m["avg_spend"], m["L"], m["k"])
-            opt_c = m["scale"] * n_obs * hill_saturation(opt_avg, m["L"], m["k"])
+            max_sp = m.get("max_spend", 1)
+            curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else m["avg_spend"]
+            opt_norm = opt_avg / max_sp if max_sp > 0 else opt_avg
+            curr_c = m["scale"] * n_obs * hill_saturation(curr_norm, m["L"], m["k"])
+            opt_c = m["scale"] * n_obs * hill_saturation(opt_norm, m["L"], m["k"])
         else:
             curr_c, opt_c = 0, 0
 
@@ -804,6 +910,7 @@ def log_regional_metrics(
 def compute_marginal_roas(
     contributions_df: pd.DataFrame,
     saturation_params: list[dict],
+    n_obs: int,
     spend_increase_pcts: list[float] | None = None,
 ) -> list[dict]:
     """
@@ -824,6 +931,7 @@ def compute_marginal_roas(
     Args:
         contributions_df: DataFrame containing 'channel', 'total_spend', 'contribution'.
         saturation_params: List of dicts with 'channel', 'L_mean', 'k_mean', 'max_spend'.
+        n_obs: Number of observations (weeks) used to compute average spend.
         spend_increase_pcts: Spend variation percentages to evaluate (default: -30 to +100).
     
     Returns:
@@ -848,8 +956,11 @@ def compute_marginal_roas(
         k = params["k_mean"]
         max_spend = params.get("max_spend", base_spend)
         
-        # Compute normalized current spend
-        x_current = base_spend / max_spend if max_spend > 0 else 0.5
+        # Compute avg spend per observation (week)
+        avg_spend = base_spend / n_obs if n_obs > 0 else base_spend
+        
+        # Normalize to [0,1] scale (L and k were calibrated on normalized data)
+        x_current = avg_spend / max_spend if max_spend > 0 else 0.5
         
         # Estimate β from current observation: β = Contribution / S(x_current)
         s_current = (x_current ** k) / (L ** k + x_current ** k + 1e-8)
@@ -859,20 +970,28 @@ def compute_marginal_roas(
             multiplier = 1 + pct / 100.0
             new_spend = base_spend * multiplier
             
-            # Compute new normalized spend (FIX #1: use x_current × multiplier)
+            # Compute new normalized spend
             x_new = x_current * multiplier
             
+            # FIX #3: Clamp to avoid extrapolation beyond valid domain
+            x_new_clamped = np.clip(x_new, 1e-6, 2.0)  # Allow up to 2x max
+            
             # Hill derivative: dS/dx = k × L^k × x^(k-1) / (L^k + x^k)^2
-            numerator = k * (L ** k) * (x_new ** (k - 1) + 1e-12)
-            denominator = (L ** k + x_new ** k) ** 2 + 1e-8
+            # FIX #3: Apply epsilon to BASE before power for numerical stability
+            x_safe = x_new_clamped + 1e-12
+            x_pow_k_minus_1 = np.power(x_safe, k - 1)
+            L_pow_k = np.power(L + 1e-12, k)
+            x_pow_k = np.power(x_safe, k)
+            
+            numerator = k * L_pow_k * x_pow_k_minus_1
+            denominator = np.power(L_pow_k + x_pow_k, 2) + 1e-8
             dS_dx = numerator / denominator
             
             # Marginal ROAS: dR/dS_raw = β × dS/dx × (1/max_spend)
-            # FIX #2: removed duplicate k multiplication
             mroas = beta * dS_dx / max_spend if max_spend > 0 else 0
             
             # Compute saturation at new spend level
-            s_new = (x_new ** k) / (L ** k + x_new ** k + 1e-8)
+            s_new = x_pow_k / (L_pow_k + x_pow_k + 1e-8)
             
             results.append({
                 "channel": channel,
