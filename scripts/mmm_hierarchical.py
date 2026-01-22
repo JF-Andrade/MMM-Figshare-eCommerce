@@ -254,6 +254,13 @@ def prepare_model_data(
         "territories_test": df_test[GEO_COL].values,
     })
     
+    # Add spend max for consistent scale in deliverables
+    # This ensures L/k parameters (calibrated on normalized spend) are used correctly
+    model_data["spend_max_by_channel"] = {
+        col.replace("_SPEND", ""): float(df_train[col].max())
+        for col in SPEND_COLS if col in df_train.columns
+    }
+    
     # Save datasets for inspection
     inspect_dir = PROJECT_ROOT / "data" / "inspection"
     inspect_dir.mkdir(parents=True, exist_ok=True)
@@ -579,30 +586,7 @@ def run_hierarchical(
         idata.to_netcdf(output_dir / "mmm_hierarchical_trace.nc")
         mlflow.log_artifact(str(output_dir / "mmm_hierarchical_trace.nc"))
         
-        # =====================================================================
-        # GENERATE ALL DELIVERABLES
-        # =====================================================================
-        deliverables = generate_all_deliverables(
-            idata=idata,
-            m_data=m_data,
-            regions=regions,
-            output_dir=output_dir,
-            log_to_mlflow=True,
-        )
-        
-        # Validate and save summary
-        run_id = mlflow.active_run().info.run_id
-        validated = validate_and_save_deliverables(
-            run_id=run_id,
-            metrics=combined_metrics,
-            roi_df=pd.DataFrame(deliverables["contributions"]).assign(
-                region="Global", 
-                spend=lambda df: df["total_spend"]
-            ),
-            regions=regions,
-            channels=m_data["channel_names"],
-        )
-        mlflow.log_dict(validated, "deliverables/validated.json")
+        print("   Training artifacts saved to MLflow.")
 
     print("\n" + "=" * 60)
     print("CUSTOM HIERARCHICAL MODEL COMPLETE")

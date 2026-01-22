@@ -123,12 +123,9 @@ def prepare_weekly_data(
     # Log-transform target
     df_weekly[f"{target_col}_log"] = log_transform(df_weekly[target_col])
 
-    # Normalize spend columns per channel
-    for col in spend_cols:
-        if col in df_weekly.columns:
-            max_val = df_weekly[col].max()
-            if max_val > 0:
-                df_weekly[f"{col}_norm"] = df_weekly[col] / max_val
+    # FIX #9: REMOVED premature normalization that caused data leakage
+    # Normalization is done in prepare_model_data() using train-only max
+    # to prevent information from test set leaking into training
 
     return df_weekly
 

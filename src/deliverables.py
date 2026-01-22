@@ -138,9 +138,15 @@ def _compute_regional_metrics(
     idata: "az.InferenceData",
     m_data: dict,
     regions: list[str],
-    scale_factor: float,
+    # REMOVED: scale_factor parameter - compute per region instead (FIX #1)
 ) -> list[dict]:
-    """Compute per-region channel metrics."""
+    """
+    Compute per-region channel metrics.
+    
+    FIX #1: Uses region-specific scale factor for log→linear conversion
+    instead of global scale factor. This is critical because the ratio
+    of linear revenue to log-revenue varies by territory.
+    """
     regional_data_list = []
     
     for r_idx, region_name in enumerate(regions):
@@ -156,8 +162,14 @@ def _compute_regional_metrics(
             idata, X_sub, idx_sub, m_data["channel_names"]
         )
         
-        # Convert log→linear and use raw spend for ROI
-        reg_contrib_df["contribution"] = reg_contrib_df["contribution"] * scale_factor
+        # FIX #1: Compute REGION-SPECIFIC scale factor
+        region_revenue = df_sub[TARGET_COL].sum()
+        region_mean_log = df_sub["y_log"].mean()
+        n_obs_region = len(df_sub)
+        region_scale_factor = region_revenue / (region_mean_log * n_obs_region + 1e-8)
+        
+        # Convert log→linear with region-specific scale
+        reg_contrib_df["contribution"] = reg_contrib_df["contribution"] * region_scale_factor
         
         spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
         for i, raw_col in enumerate(spend_cols_raw):
@@ -226,7 +238,7 @@ def generate_all_deliverables(
     # 2. REGIONAL METRICS
     # =========================================================================
     print("[2/8] Computing regional metrics...")
-    regional_data = _compute_regional_metrics(idata, m_data, regions, scale_factor)
+    regional_data = _compute_regional_metrics(idata, m_data, regions)  # FIX #1
     deliverables["regional"] = regional_data
     
     if log_to_mlflow:
@@ -242,13 +254,29 @@ def generate_all_deliverables(
         _extract_posterior_parameters(idata, m_data["channel_names"], regions)
     
     # Add max_spend to saturation params for marginal ROAS calculation
+    # Use pre-computed max from training for consistency with normalization
+    channel_max_spend = {}  # Store for territory params
     for i, param in enumerate(saturation_params):
         channel = param["channel"]
         raw_col = f"{channel}_SPEND"
-        if raw_col in m_data["df_train"].columns:
-            param["max_spend"] = float(m_data["df_train"][raw_col].max())
+        
+        # Prefer spend_max from training (consistent with L/k calibration)
+        if "spend_max_by_channel" in m_data and channel in m_data["spend_max_by_channel"]:
+            max_spend = float(m_data["spend_max_by_channel"][channel])
+        elif raw_col in m_data["df_train"].columns:
+            # Fallback for backward compatibility
+            max_spend = float(m_data["df_train"][raw_col].max())
         else:
-            param["max_spend"] = float(contrib_df.loc[contrib_df["channel"] == channel, "total_spend"].iloc[0])
+            max_spend = float(contrib_df.loc[contrib_df["channel"] == channel, "total_spend"].iloc[0])
+        
+        param["max_spend"] = max_spend
+        channel_max_spend[channel] = max_spend
+    
+    # FIX #8: Add max_spend to territory params using global channel max
+    # For territory optimization, we use the global max (consistent with training normalization)
+    for tp in saturation_territory_params:
+        channel = tp["channel"]
+        tp["max_spend"] = channel_max_spend.get(channel, 1.0)
     
     deliverables["adstock"] = adstock_params
     deliverables["saturation"] = saturation_params
@@ -267,7 +295,8 @@ def generate_all_deliverables(
     # 4. MARGINAL ROAS
     # =========================================================================
     print("[4/8] Computing marginal ROAS...")
-    marginal_roas_data = compute_marginal_roas(contrib_df, saturation_params)
+    n_obs_train = len(m_data["X_spend_train"])
+    marginal_roas_data = compute_marginal_roas(contrib_df, saturation_params, n_obs=n_obs_train)
     deliverables["marginal_roas"] = marginal_roas_data
     
     if log_to_mlflow:
