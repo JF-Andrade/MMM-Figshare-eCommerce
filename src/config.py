@@ -166,13 +166,12 @@ EPSILON = 1e-8
 ADSTOCK_CLIP_MIN = 0.01
 ADSTOCK_CLIP_MAX = 0.99
 
-# --- Priors: Adstock (Geometric) ---
+# --- Priors: Adstock (Geometric). It's basically Exponential Weighted Moving Average (EWMA) ---
 L_MAX = 10                             # Maximum lag weeks
 PRIOR_ADSTOCK_ALPHA = 2                # Beta(alpha, beta) for decay rate
 PRIOR_ADSTOCK_BETA = 2
 PRIOR_SIGMA_ADSTOCK_TERRITORY = 0.4    # Regional variation
 
-# --- Priors: Saturation (Hill Function) ---
 # --- Priors: Saturation (Hill Function) ---
 PRIOR_SATURATION_L_SIGMA = 0.7         # HalfNormal sigma for L (Increased from 0.3 to allow higher saturation points)
 PRIOR_SATURATION_K_ALPHA = 4           # Gamma(alpha, beta) for k (Adjusted for smoother curves)

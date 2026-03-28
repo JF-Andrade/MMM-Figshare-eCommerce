@@ -1,0 +1,117 @@
+flowchart TD
+    %% Hyperpriors
+    subgraph Hyperpriors [Global Hyperpriors]
+        direction TB
+        SA["σ_α ~ HalfNormal(0.2)"]
+        SL["σ_L ~ HalfNormal(0.2)"]
+        SB["σ_β ~ HalfNormal(0.05)"]
+    end
+
+    %% Global Parameters
+    subgraph Global [Global Parameters]
+        direction TB
+        ALPHA["α_channel ~ Beta(2, 2)<br/>(Decay Rate)"]
+        L["L_channel ~ HalfNormal(0.3)<br/>(Half-Saturation)"]
+        K["k_channel ~ Gamma(2, 1)<br/>(Shape / Steepness)"]
+        BETA_G["β_channel ~ HalfNormal(0.5)<br/>(Effectiveness)"]
+    end
+
+    %% Territory Parameters
+    subgraph Territory [Territory Parameters]
+        direction TB
+        ALPHA_T["α_territory ~ Normal(α_channel, σ_α)"]
+        L_T["L_territory ~ Normal(L_channel, σ_L)"]
+        BETA_T["β_territory ~ Normal(β_channel, σ_β)"]
+    end
+
+    %% Data Transformations
+    subgraph Transforms [Media Transformations]
+        direction TB
+        SPEND[("Raw Media Spend (x)")]
+        NORM["Currency Normalization:<br/>x_norm = x / max_spend"]
+        ADS["Geometric Adstock:<br/>x_adstocked = x_norm + α_territory * x_prev"]
+        SAT["Hill Saturation:<br/>x_sat = (x_adstocked^k) / (x_adstocked^k + L_territory^k)"]
+    end
+
+    %% Likelihood & Expected Revenue
+    subgraph Likelihood [Revenue Likelihood Model]
+        direction TB
+        CONTROLS["Control Variables:<br/>Trend (Horseshoe)<br/>Holidays (Horseshoe)<br/>Seasonality (Fourier)"]
+        MU["μ = Intercept + Controls + Σ (β_territory * x_sat)"]
+        NU["ν ~ Gamma(2, 0.5)<br/>(Degrees of freedom)"]
+        SIGMA["σ ~ HalfNormal(1.0)<br/>(Observation noise)"]
+        Y[("Revenue ~ Student-T(ν, μ, σ)")]
+    end
+    
+    %% Streamlit Analytical Engine
+    subgraph UI [Streamlit App & Post-Modeling Calculations]
+        direction TB
+        CONTRIB["Channel Contribution:<br/>Contrib = β_territory * x_sat"]
+        
+        ROI["Channel iROAS (ROI):<br/>ROI = Contrib / Total Spend"]
+        
+        SLSQP["Budget Optimizer (SLSQP):<br/>Minimizes Obj: -Σ (β * x_sat_opt)<br/>Constraint: Σ (x_opt) = Total_Budget"]
+        
+        LIFT["Expected Revenue Lift:<br/>Lift = Optimal_Contrib - Current_Contrib<br/>(Calculated via exact Hill difference)"]
+        
+        M_ROAS["Marginal ROAS / Saturation Alert:<br/>Derivative of Hill curve at current spend.<br/>Flags over-saturated channels."]
+        
+        DASH["Dashboard Modules:<br/>- ROI Bar Charts & Heatmaps<br/>- Reallocation Tables<br/>- Interactive What-If Simulator"]
+    end
+
+    %% Connections
+    SA --> ALPHA_T
+    SL --> L_T
+    SB --> BETA_T
+
+    ALPHA --> ALPHA_T
+    L --> L_T
+    BETA_G --> BETA_T
+
+    SPEND --> NORM
+    NORM --> ADS
+    ALPHA_T --> ADS
+    
+    ADS --> SAT
+    K --> SAT
+    L_T --> SAT
+
+    SAT --> MU
+    BETA_T --> MU
+    CONTROLS --> MU
+
+    MU --> Y
+    NU --> Y
+    SIGMA --> Y
+    
+    %% Post Modeling Connections
+    Y -.-> CONTRIB
+    BETA_T -.-> CONTRIB
+    SAT -.-> CONTRIB
+    SPEND -.-> ROI
+    CONTRIB --> ROI
+    
+    CONTRIB --> SLSQP
+    SLSQP --> LIFT
+    CONTRIB --> LIFT
+    SAT -.-> M_ROAS
+    
+    ROI --> DASH
+    SLSQP --> DASH
+    LIFT --> DASH
+    M_ROAS --> DASH
+
+    %% Styling
+    classDef hyper fill:#f0f0f0,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5;
+    classDef global fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef territory fill:#e8f5e9,stroke:#388e3c,stroke-width:2px;
+    classDef transform fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef model fill:#ffcdd2,stroke:#d32f2f,stroke-width:2px;
+    classDef ui fill:#e1bee7,stroke:#8e24aa,stroke-width:2px;
+    
+    class SA,SL,SB hyper;
+    class ALPHA,L,K,BETA_G global;
+    class ALPHA_T,L_T,BETA_T territory;
+    class SPEND,NORM,ADS,SAT transform;
+    class CONTROLS,MU,NU,SIGMA,Y model;
+    class CONTRIB,ROI,SLSQP,LIFT,M_ROAS,DASH ui;

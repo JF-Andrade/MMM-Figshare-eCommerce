@@ -92,5 +92,5 @@ ehthumbs.db
 secrets.yaml
 credentials.json
 
-# Private documentation (not for GitHub)
+# Private documentation
 docs/model_mathematics.md
