@@ -160,7 +160,7 @@ All features are centralized in `src/config.py`.
   - Ensures that selected adstock/saturation parameters are robust across different time periods and seasonalities, minimizing overfitting to a specific timeframe.
 - **Hierarchical Bayesian (Out-of-Time Holdout)**: Uses the last N weeks as a strict holdout set.
   - Mimics a real-world production forecasting scenario where future data is completely unseen. Also computationally necessary as full Bayesian cross-validation is prohibitively expensive for large hierarchical models.
-- **Data Integrity**: Pydantic schemas enforce type checking for all IO operations (`src/schemas.py`).
+- **Data Integrity**: Pipeline includes strict type-checking and automated calculation verification.
 
 ### Region Usage
 
@@ -411,13 +411,11 @@ MMM-Figshare-eCommerce/
 │   ├── preprocessing.py        # Pipeline orchestration & data prep
 │   ├── transformations.py      # Core math & feature engineering helpers
 │   ├── pipeline.py             # Pipeline orchestration logic
-│   ├── schemas.py              # Pydantic data schemas
 │   ├── baseline_evaluation.py  # Ridge model metrics & ROI computation
-│   ├── insights.py             # Logging, optimization, parameter extraction
+│   ├── insights.py             # Optimization, parameter extraction
 │   ├── comparison.py           # Model comparison utilities
 │   ├── utils/                  # Utility modules
-│   │   ├── __init__.py
-│   │   └── pymc_marketing_helpers.py  # Standard API helpers
+│   │   └── __init__.py
 │   └── models/                 # Model package
 │       ├── __init__.py         # Package exports
 │       └── hierarchical_bayesian.py  # Bayesian MMM with learned transforms
@@ -439,7 +437,6 @@ MMM-Figshare-eCommerce/
 │   ├── test_data_loader.py     # Data loading tests
 │   ├── test_preprocessing.py   # Preprocessing tests
 │   ├── test_model.py           # Model creation tests
-│   ├── test_model_insights.py  # Insights extraction tests
 │   ├── test_optimization.py    # Optimization tests
 │   ├── test_horseshoe_tau.py   # Horseshoe prior formula validation
 │   └── test_roi.py             # ROI computation tests

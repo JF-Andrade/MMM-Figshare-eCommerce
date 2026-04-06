@@ -41,8 +41,7 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 | 10  | [src/baseline_evaluation.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/baseline_evaluation.py)                   | Métricas (R², MAPE), cálculo de ROI para baseline |
 | 11  | [src/insights.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/insights.py)                                         | Logging de artefatos, curvas de saturação, otim.  |
 | 12  | [src/deliverables.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/deliverables.py)                                 | **NOVO**: Geração de deliverables para dashboard  |
-| 13  | [src/utils/pymc_marketing_helpers.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/utils/pymc_marketing_helpers.py) | Helpers Standard API (pymc-marketing MMM)         |
-| 14  | [src/comparison.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/comparison.py)                                     | Comparação baseline vs hierárquico                |
+| 13  | [src/comparison.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/comparison.py)                                     | Comparação baseline vs hierárquico                |
 
 ---
 
@@ -50,8 +49,8 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 
 | #   | Arquivo                                                                                       | Objetivo                                              |
 | --- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| 15  | [src/pipeline.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/pipeline.py)                 | Orquestrador de etapas (LOAD → DELIVERABLES → EXPORT) |
-| 16  | [scripts/run_pipeline.py](file:///d:/Projects/MMM-Figshare-eCommerce/scripts/run_pipeline.py) | CLI para executar o pipeline                          |
+| 14  | [src/pipeline.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/pipeline.py)                 | Orquestrador de etapas (LOAD → DELIVERABLES → EXPORT) |
+| 15  | [scripts/run_pipeline.py](file:///d:/Projects/MMM-Figshare-eCommerce/scripts/run_pipeline.py) | CLI para executar o pipeline                          |
 
 > **Nota:** Use `--deliverables-only` para regenerar deliverables sem re-treinar.
 > **Status:** Auditoria de escala e lift 0% concluída (2026-01-19).
@@ -62,16 +61,16 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 
 | #   | Arquivo                                                                                                                 | Objetivo                                      |
 | --- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 17  | [app/mlflow_loader.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/mlflow_loader.py)                                 | **Adapter Layer**: Mapeia artefatos do MLflow |
-| 18  | [app/shared.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/shared.py)                                               | Sidebar compartilhada, seletor de runs        |
-| 19  | [app/components/kpi_cards.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/components/kpi_cards.py)                   | Componentes de KPI                            |
-| 20  | [app/components/charts.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/components/charts.py)                         | Gráficos Plotly                               |
-| 21  | [app/Home.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/Home.py)                                                   | Página inicial                                |
-| 22  | [app/pages/01_Performance_Analysis.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/01_Performance_Analysis.py) | KPIs, ROI, contribuições, alertas             |
-| 23  | [app/pages/02_Budget_Optimization.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/02_Budget_Optimization.py)   | Otimização de budget                          |
-| 24  | [app/pages/03_What_If_Simulator.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/03_What_If_Simulator.py)       | Simulação interativa de budget                |
-| 25  | [app/pages/04_Technical_Details.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/04_Technical_Details.py)       | Parâmetros, comparação, diagnósticos          |
-| 26  | [app/pages/05_Historical_Tracking.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/05_Historical_Tracking.py)   | Tendências de ROI, benchmarks históricos      |
+| 16  | [app/mlflow_loader.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/mlflow_loader.py)                                 | **Adapter Layer**: Mapeia artefatos do MLflow |
+| 17  | [app/shared.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/shared.py)                                               | Sidebar compartilhada, seletor de runs        |
+| 18  | [app/components/kpi_cards.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/components/kpi_cards.py)                   | Componentes de KPI                            |
+| 19  | [app/components/charts.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/components/charts.py)                         | Gráficos Plotly                               |
+| 20  | [app/Home.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/Home.py)                                                   | Página inicial                                |
+| 21  | [app/pages/01_Performance_Analysis.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/01_Performance_Analysis.py) | KPIs, ROI, contribuições, alertas             |
+| 22  | [app/pages/02_Budget_Optimization.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/02_Budget_Optimization.py)   | Otimização de budget                          |
+| 23  | [app/pages/03_What_If_Simulator.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/03_What_If_Simulator.py)       | Simulação interativa de budget                |
+| 24  | [app/pages/04_Technical_Details.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/04_Technical_Details.py)       | Parâmetros, comparação, diagnósticos          |
+| 25  | [app/pages/05_Historical_Tracking.py](file:///d:/Projects/MMM-Figshare-eCommerce/app/pages/05_Historical_Tracking.py)   | Tendências de ROI, benchmarks históricos      |
 
 ---
 
@@ -79,11 +78,11 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 
 | #   | Arquivo                                                                                               | Objetivo                            |
 | --- | ----------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| 27  | [src/schemas.py](file:///d:/Projects/MMM-Figshare-eCommerce/src/schemas.py)                           | Validação Pydantic dos deliverables |
-| 28  | [tests/test_roi.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_roi.py)                     | Testes unitários do cálculo de ROI  |
-| 29  | [tests/test_marginal_roas.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_marginal_roas.py) | **NOVO**: Testes de marginal ROAS   |
-| 30  | [tests/test_preprocessing.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_preprocessing.py) | Testes de adstock/saturação         |
-| 31  | [tests/test_horseshoe_tau.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_horseshoe_tau.py) | Testes do prior Horseshoe           |
+| 26  | [tests/test_roi.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_roi.py)                     | Testes unitários do cálculo de ROI  |
+| 27  | [tests/test_marginal_roas.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_marginal_roas.py) | **NOVO**: Testes de marginal ROAS   |
+| 28  | [tests/test_contribution_math.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_contribution_math.py)   | **VITAL**: Verificação da consistência matemática |
+| 29  | [tests/test_preprocessing.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_preprocessing.py) | Testes de adstock/saturação         |
+| 30  | [tests/test_horseshoe_tau.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_horseshoe_tau.py) | Testes do prior Horseshoe           |
 
 ---
 
@@ -115,8 +114,8 @@ graph TD
 | 1. Contexto     | 3        | ~15 min        |
 | 2. Dados        | 3        | ~30 min        |
 | 3. Modelagem    | 3        | ~60 min        |
-| 4. Avaliação    | 5        | ~45 min        |
+| 4. Avaliação    | 4        | ~40 min        |
 | 5. Orquestração | 2        | ~15 min        |
 | 6. Dashboard    | 10       | ~40 min        |
 | 7. Testes       | 5        | ~20 min        |
-| **Total**       | **31**   | **~3.5 horas** |
+| **Total**       | **30**   | **~3.4 horas** |

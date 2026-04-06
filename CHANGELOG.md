@@ -2,6 +2,26 @@
 
 All notable changes to the MMM project.
 
+## [2026-04-06] Hierarchical MMM Cleanup
+
+Major technical debt reduction by pruning orphaned legacy code and streamlining math helpers.
+
+### Pruning & System Cleanup
+
+| Change | Description | File |
+| --- | --- | --- |
+| **Legacy Logging** | Removed 9 orphaned `log_*` wrappers (diagnostic, predictions, ROI, etc.) | `src/insights.py` |
+| **Pydantic Schemas** | Deleted `src/schemas.py`; logic moved to dynamic dictionary deliverables | `src/schemas.py` |
+| **Helper Functions** | Deleted legacy `pymc_marketing_helpers.py` (superseded by hierarchical custom logic) | `src/utils/` |
+| **Factory Functions** | Removed redundant `create_pipeline` | `src/pipeline.py` |
+| **Math Helpers** | Inlined `_compute_linear_contributions` into tests for better cohesion | `src/models/` |
+
+### Test & Hygiene
+
+- **Pruning**: Removed unused imports (`F401`) and orphaned local variables (`F841`) across all `src/` and `tests/` files.
+- **Legacy Tests**: Deleted `tests/test_model_insights.py` which covered removed legacy helpers.
+- **Verification**: Verified 100% test pass rate (13/13) and confirmed Streamlit dashboard stability.
+
 ## [2026-01-21] Zero Lift Fix & Optimization Robustness
 
 Critical fix for the "0% Revenue Lift" issue in budget optimization, achieved by adjusting saturation priors and improving optimizer stability.
