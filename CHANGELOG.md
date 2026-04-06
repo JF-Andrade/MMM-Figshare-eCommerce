@@ -8,19 +8,26 @@ Major technical debt reduction by pruning orphaned legacy code and streamlining 
 
 ### Pruning & System Cleanup
 
-| Change | Description | File |
-| --- | --- | --- |
-| **Legacy Logging** | Removed 9 orphaned `log_*` wrappers (diagnostic, predictions, ROI, etc.) | `src/insights.py` |
-| **Pydantic Schemas** | Deleted `src/schemas.py`; logic moved to dynamic dictionary deliverables | `src/schemas.py` |
-| **Helper Functions** | Deleted legacy `pymc_marketing_helpers.py` (superseded by hierarchical custom logic) | `src/utils/` |
-| **Factory Functions** | Removed redundant `create_pipeline` | `src/pipeline.py` |
-| **Math Helpers** | Inlined `_compute_linear_contributions` into tests for better cohesion | `src/models/` |
+Comprehensive cleanup of the codebase, removing technical debt and stabilizing the hierarchical pipeline for production release.
 
-### Test & Hygiene
+- **Pruning**: Removed 9 legacy `log_*` functions in `src/insights.py`, deleted orphaned `src/schemas.py` and `src/utils/pymc_marketing_helpers.py`, and removed redundant `create_pipeline` in `src/pipeline.py`.
+- **Regression Fix**: Restored missing `create_hierarchy_indices` export in `src/preprocessing.py`, resolving a critical `ImportError` in the hierarchical model.
+- **Documentation**: Updated `README.md`, `reading_roadmap.md`, and `CHANGELOG.md` to reflect the current, lean project structure.
+- **Linting**: Applied global `ruff` rules to eliminate unused imports and variables across all core modules.
+- **Verification**: Confirmed 100% test pass rate (13/13) and verified functional stability of the Streamlit dashboard.
 
-- **Pruning**: Removed unused imports (`F401`) and orphaned local variables (`F841`) across all `src/` and `tests/` files.
-- **Legacy Tests**: Deleted `tests/test_model_insights.py` which covered removed legacy helpers.
-- **Verification**: Verified 100% test pass rate (13/13) and confirmed Streamlit dashboard stability.
+## [2026-04-04] Math Correction: Log-to-Linear & Jensen’s Inequality
+
+Major mathematical overhaul to resolve flaws in how channel contributions and budget optimization were computed in linear space.
+
+### 📐 Mathematical Innovation
+- **Counterfactual Marginals**: Moved from naive scaling to exact marginal contributions: `E[exp(μ_full)] - E[exp(μ_full - β_c·Sat_c)]`. This respects the multiplicative nature of the log-linear model and addresses **Jensen's Inequality** bias.
+- **Non-Additive Model**: Explicitly acknowledged that contributions in a multiplicative model do not sum to total revenue; the difference is now correctly categorized as a **Base/Synergy** effect.
+- **True Objective Optimizer**: The budget optimizer now uses the full multiplicative objective function `Σ_t exp(base_t + Σ_c β_eff_c · Sat_c(x_c))` across every observation, leading to more accurate allocation.
+
+### 🛠️ Refactorings
+- **Math Standardization**: Moved internal consistency helpers into the test suite (`tests/test_contribution_math.py`).
+- **Clean Deliverables**: Removed `scale_factor` from all JSON outputs; all metrics are now natively in linear dollars.
 
 ## [2026-01-21] Zero Lift Fix & Optimization Robustness
 

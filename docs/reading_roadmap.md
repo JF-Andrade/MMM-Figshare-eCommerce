@@ -74,15 +74,18 @@ Ordem recomendada para compreensão completa do projeto, do início ao fim.
 
 ---
 
-## Fase 7: Testes e Schemas
+## Fase 7: Testes e Schemas (Rigor Matemático)
 
 | #   | Arquivo                                                                                               | Objetivo                            |
 | --- | ----------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | 26  | [tests/test_roi.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_roi.py)                     | Testes unitários do cálculo de ROI  |
 | 27  | [tests/test_marginal_roas.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_marginal_roas.py) | **NOVO**: Testes de marginal ROAS   |
-| 28  | [tests/test_contribution_math.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_contribution_math.py)   | **VITAL**: Verificação da consistência matemática |
+| 28  | [tests/test_contribution_math.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_contribution_math.py)   | **VITAL**: Verificação da consistência matemática (**Correção Log-to-Linear**) |
 | 29  | [tests/test_preprocessing.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_preprocessing.py) | Testes de adstock/saturação         |
 | 30  | [tests/test_horseshoe_tau.py](file:///d:/Projects/MMM-Figshare-eCommerce/tests/test_horseshoe_tau.py) | Testes do prior Horseshoe           |
+
+> [!IMPORTANT]
+> **Rigor Matemático (2026-04-04):** O projeto foi atualizado para corrigir falhas na conversão log-linear (Desigualdade de Jensen). Os cálculos de contribuição agora usam **Marginais Contrafatuais** exatos, e o otimizador utiliza a função objetivo multiplicativa real. Veja `tests/test_contribution_math.py` para a prova matemática.
 
 ---
 

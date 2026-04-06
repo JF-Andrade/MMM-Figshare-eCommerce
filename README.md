@@ -46,22 +46,25 @@ This project applies Bayesian Media Mix Modeling to solve these challenges, prov
 
 ### Aggregated Channel ROI (All Territories)
 
-> **Source:** Latest Hierarchical Run (Representative results from 2023 evaluation data)
+> **Note:** Results are currently being re-calculated following the **April 2024 Math Correction** (Log-to-Linear framework).
 
-| Channel            | ROI  | Contribution Share |
-| ------------------ | ---- | ------------------ |
-| GOOGLE_SHOPPING    | 4.42 | 62.7%              |
-| GOOGLE_PMAX        | 1.76 | 17.2%              |
-| META_FACEBOOK      | 1.47 | 17.0%              |
-| GOOGLE_DISPLAY     | 0.33 | 0.8%               |
-| GOOGLE_PAID_SEARCH | 0.29 | 3.3%               |
+| Channel            | ROI      | Contribution Share |
+| ------------------ | -------- | ------------------ |
+| GOOGLE_SHOPPING    | *Pending* | *Pending*          |
+| GOOGLE_PMAX        | *Pending* | *Pending*          |
+| META_FACEBOOK      | *Pending* | *Pending*          |
+| GOOGLE_DISPLAY     | *Pending* | *Pending*          |
+| GOOGLE_PAID_SEARCH | *Pending* | *Pending*          |
 
 ### Model Performance
 
 | Model                     | R² Train | R² Test | MAPE Test |
 | ------------------------- | -------- | ------- | --------- |
 | **Ridge Baseline**        | 0.75     | 0.49    | 15.7%     |
-| **Hierarchical Bayesian** | 0.67     | 0.86    | 36.4%     |
+| **Hierarchical Bayesian** | *Pending* | *Pending* | *Pending*   |
+
+> **Verification:** Mathematical consistency is tracked in `tests/test_contribution_math.py`.
+
 
 ### Interactive Dashboard
 
@@ -361,25 +364,30 @@ All priors are externalized to `src/config.py` for easy tuning.
   - **Ridge Baseline**: `TimeSeriesSplit` (5 folds) for hyperparameter tuning.
   - **Hierarchical**: **Panel Time-Based Holdout** (Last 8 weeks of each territory).
 
-### Known Limitations
+### Mathematical Methodology: Log-to-Linear Rigor
 
-> [!NOTE]
-> **Contribution Calculation.** Model contributions are computed in log-space and
-> converted to monetary scale via a linear scaling factor. This first-order
-> approximation may introduce 5-15% error in absolute values. Channel rankings
-> and relative comparisons remain reliable.
+To ensure mathematical consistency in our **log-linear** hierarchical model, we implement rigorous transformations when reporting results in linear currency (revenue).
 
-> [!NOTE]  
-> **Budget Optimizer.** The optimization routine estimates channel effectiveness (β)
-> from observed contribution and saturation response. This heuristic does not re-run
-> the full posterior predictive. Maximum precision requires model re-fitting with
-> modified spend scenarios.
+#### 1. Jensen's Inequality & Unscaled Projections
+Directly exponentiating the mean of a log-normal distribution violates **Jensen's Inequality**: $E[\exp(X)] \geq \exp(E[X])$. Naive linear scaling of log-contributions introduces significant bias.  
+Our pipeline computes all linear metrics (Revenue, ROI) directly from the exponentiated posterior predictions, ensuring that projected values correctly reflect the multiplicative nature of the underlying Data Generating Process (DGP).
 
-> [!NOTE]
-> **What-If Simulator.** The simulator models returns via Hill saturation curves.
-> Carryover (adstock) effects from modified budget allocations are not simulated;
-> they are implicitly captured in the estimated β. This approach is best suited
-> for short-term scenarios (1-4 weeks).
+#### 2. Counterfactual Marginal Contributions
+In a multiplicative model, individual channel contributions are non-additive. We compute the revenue contribution for each channel $c$ as the **marginal difference** between the full model prediction and a counterfactual scenario where that channel's spend is zero:
+
+$$\text{Contribution}_{c,t} = \exp(\mu_{\text{full}, t}) - \exp(\mu_{\text{full}, t} - \beta_{\text{eff}, c, t} \cdot \text{Sat}_{c, t})$$
+
+The residual difference between the sum of these marginals and the total predicted revenue is explicitly attributed to **Base & Synergy** effects, providing a transparent view of channel performance.
+
+#### 3. True-Objective Budget Optimization
+The budget optimizer avoids the "linearization trap." Instead of optimizing a simple sum of responses, it uses the true multiplicative objective function across all observations $t$:
+
+$$\max_{x} \sum_t \exp\left(\text{base}_t + \sum_c \beta_{\text{eff}, c} \cdot \text{Sat}_c(x_{c,t})\right)$$
+
+This approach provides optimal spend allocations that are mathematically consistent with the model's structure, maximizing actual revenue rather than an approximation.
+
+#### 4. Verified Consistency
+The mathematical integrity of this framework is validated via `tests/test_contribution_math.py`, which ensures that contributions, ROI, and optimizer objectives remain consistent across transformations.
 
 ---
 
