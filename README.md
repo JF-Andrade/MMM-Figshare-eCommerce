@@ -419,11 +419,11 @@ MMM-Figshare-eCommerce/
 │   ├── preprocessing.py        # Pipeline orchestration & data prep
 │   ├── transformations.py      # Core math & feature engineering helpers
 │   ├── pipeline.py             # Pipeline orchestration logic
+│   ├── deliverables.py         # Dashboard artifacts generator (ROI, lift, etc.)
 │   ├── baseline_evaluation.py  # Ridge model metrics & ROI computation
 │   ├── insights.py             # Optimization, parameter extraction
 │   ├── comparison.py           # Model comparison utilities
 │   ├── utils/                  # Utility modules
-│   │   └── __init__.py
 │   └── models/                 # Model package
 │       ├── __init__.py         # Package exports
 │       └── hierarchical_bayesian.py  # Bayesian MMM with learned transforms
@@ -434,20 +434,21 @@ MMM-Figshare-eCommerce/
 │   ├── shared.py               # Shared UI components and configs
 │   ├── components/             # Reusable UI widgets
 │   └── pages/                  # Dashboard pages
-│       ├── 01_Executive_Summary.py
+│       ├── 01_Performance_Analysis.py
 │       ├── 02_Budget_Optimization.py
-│       ├── 03_Regional_Analysis.py
-│       ├── 04_Model_Details.py
-│       ├── 05_Model_Comparison.py
-│       └── 06_Channel_Efficiency.py  # CAC, ROAS metrics
+│       ├── 03_What_If_Simulator.py
+│       ├── 04_Technical_Details.py
+│       └── 05_Historical_Tracking.py
 │
 ├── tests/
+│   ├── test_contribution_math.py # Mathematical consistency verification
 │   ├── test_data_loader.py     # Data loading tests
-│   ├── test_preprocessing.py   # Preprocessing tests
+│   ├── test_preprocessing.py   # Preprocessing & transform tests
 │   ├── test_model.py           # Model creation tests
-│   ├── test_optimization.py    # Optimization tests
-│   ├── test_horseshoe_tau.py   # Horseshoe prior formula validation
-│   └── test_roi.py             # ROI computation tests
+│   ├── test_optimization.py    # Budget optimizer tests
+│   ├── test_roi.py             # ROI computation tests
+│   ├── test_marginal_roas.py   # Marginal ROAS calculation tests
+│   └── test_horseshoe_tau.py   # Horseshoe prior formula validation
 │
 ├── models/                     # Saved models and traces
 ├── mlruns/                     # MLflow experiment tracking
