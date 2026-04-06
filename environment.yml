@@ -46,7 +46,14 @@ dependencies:
   - jupyter>=1.0.0
   - ipykernel>=6.0.0
 
+  # Testing
+  - pytest>=7.0.0
+  - pytest-mock
+
   # Pip-only packages
   - pip
   - pip:
       - missingno>=0.5.0
+      - arviz-base
+      - arviz-stats
+      - arviz-plots

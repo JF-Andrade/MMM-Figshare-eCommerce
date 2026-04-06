@@ -19,9 +19,10 @@ def test_marginal_roas_exhibits_diminishing_returns():
         "L_mean": 0.5,
         "k_mean": 2.0,
         "max_spend": 20000,
+        "beta_mean": 1.5,
     }]
     
-    results = compute_marginal_roas(contrib_df, sat_params, [0, 50, 100])
+    results = compute_marginal_roas(contrib_df, sat_params, n_obs=1, spend_increase_pcts=[0, 50, 100])
     mroas_values = [r["marginal_roas"] for r in results]
     
     # Diminishing returns: MROAS must decrease as spend increases
@@ -46,9 +47,10 @@ def test_marginal_roas_normalization():
         "L_mean": 0.5,
         "k_mean": 2.0,
         "max_spend": 10000,
+        "beta_mean": 1.0,
     }]
     
-    results = compute_marginal_roas(contrib_df, sat_params, [0])
+    results = compute_marginal_roas(contrib_df, sat_params, n_obs=1, spend_increase_pcts=[0])
     
     assert abs(results[0]["saturation_current"] - 0.5) < 0.01, (
         f"Saturation at x=L must equal 0.5. Got: {results[0]['saturation_current']}"
@@ -70,9 +72,10 @@ def test_marginal_roas_non_negative():
         "L_mean": 0.3,
         "k_mean": 1.5,
         "max_spend": 15000,
+        "beta_mean": 1.0,
     }]
     
-    results = compute_marginal_roas(contrib_df, sat_params)
+    results = compute_marginal_roas(contrib_df, sat_params, n_obs=1)
     
     for r in results:
         assert r["marginal_roas"] >= 0, f"MROAS must be non-negative: {r}"
@@ -93,9 +96,10 @@ def test_marginal_roas_saturation_increases_with_spend():
         "L_mean": 0.4,
         "k_mean": 2.0,
         "max_spend": 10000,
+        "beta_mean": 1.0,
     }]
     
-    results = compute_marginal_roas(contrib_df, sat_params, [0, 50, 100])
+    results = compute_marginal_roas(contrib_df, sat_params, n_obs=1, spend_increase_pcts=[0, 50, 100])
     saturation_values = [r["saturation_new"] for r in results]
     
     # Saturation must increase with spend (but at decreasing rate)

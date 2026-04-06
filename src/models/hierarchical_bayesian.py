@@ -12,19 +12,33 @@ Implements a PyMC model with:
 - Student-T likelihood for robustness to outliers
 """
 
-from __future__ import annotations
+import os
 
-from typing import TYPE_CHECKING
+# Enforce 64-bit precision for JAX and PyTensor on Windows
+# This is critical for Numpyro stability
+os.environ["JAX_ENABLE_X64"] = "True"
+os.environ["PYTENSOR_FLAGS"] = "floatX=float64,int_dtype=int64"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-import arviz as az
+import logging
+import json
 import numpy as np
 import pandas as pd
-import pymc as pm
 import pytensor
 import pytensor.tensor as pt
+import pymc as pm
+import arviz as az
+from typing import Dict, List, Optional, Union, Any, TYPE_CHECKING, Literal
+from pathlib import Path
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
+
+# Constants
+EPSILON = 1e-10
+SEED = 42
 
 from src.config import (
     L_MAX,
@@ -43,12 +57,10 @@ from src.config import (
     PRIOR_GAMMA_SEASON_SIGMA,
     PRIOR_SIGMA_OBS,
     PRIOR_NU_ALPHA,
-    PRIOR_NU_ALPHA,
     PRIOR_NU_BETA,
     PRIOR_HORSESHOE_NU,
     PRIOR_HORSESHOE_C2_ALPHA,
     PRIOR_HORSESHOE_C2_BETA,
-    EPSILON,
     ADSTOCK_CLIP_MIN,
     ADSTOCK_CLIP_MAX,
     MCMC_CHAINS,
@@ -57,7 +69,6 @@ from src.config import (
     MCMC_TARGET_ACCEPT,
     MCMC_MAX_TREEDEPTH,
     MCMC_SAMPLER,
-    SEED,
 )
 
 
@@ -160,6 +171,69 @@ def hill_saturation_numpy(
 
 
 # =============================================================================
+# Counterfactual Analysis Helpers (Internal)
+# =============================================================================
+
+
+def _compute_linear_contributions(
+    X_spend: "NDArray",
+    alpha_territory: "NDArray",
+    L_territory: "NDArray",
+    k_channel: "NDArray",
+    beta_channel: "NDArray",
+    beta_territory: "NDArray",
+    territory_idx: "NDArray",
+    base_mu: "NDArray",
+) -> tuple["NDArray", "NDArray"]:
+    """
+    Compute log and linear (counterfactual) contributions.
+    """
+    n_obs, n_channels = X_spend.shape
+    log_contrib = np.zeros((n_obs, n_channels))
+    
+    for c in range(n_channels):
+        x_adstock = geometric_adstock_numpy(
+            X_spend[:, c], alpha_territory[:, c], territory_idx
+        )
+        L_obs = L_territory[territory_idx, c]
+        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
+        beta_eff = beta_channel[c] + beta_territory[territory_idx, c]
+        log_contrib[:, c] = beta_eff * x_sat
+        
+    full_mu = base_mu + log_contrib.sum(axis=1)
+    linear_contrib = np.zeros((n_obs, n_channels))
+    
+    for c in range(n_channels):
+        mu_without = full_mu - log_contrib[:, c]
+        linear_contrib[:, c] = np.exp(full_mu) - np.exp(mu_without)
+        
+    return linear_contrib, log_contrib
+
+
+def _compute_base_effects(
+    idata: az.InferenceData,
+    X_features: "NDArray",
+    X_season: "NDArray",
+    territory_idx: "NDArray",
+) -> "NDArray":
+    """Compute base effects (intercept + features + season) in log space."""
+    alpha_global = idata.posterior["alpha_global"].mean(dim=["chain", "draw"]).values
+    alpha_terr_raw = idata.posterior["alpha_territory_int_raw"].mean(dim=["chain", "draw"]).values
+    sigma_terr_int = idata.posterior["sigma_territory_int"].mean(dim=["chain", "draw"]).values
+    beta_feat = idata.posterior["beta_features"].mean(dim=["chain", "draw"]).values
+    gamma_season = idata.posterior["gamma_season"].mean(dim=["chain", "draw"]).values
+    
+    alpha_terr = alpha_global + alpha_terr_raw * sigma_terr_int
+    
+    base_mu = (
+        alpha_terr[territory_idx]
+        + np.dot(X_features, beta_feat)
+        + np.dot(X_season, gamma_season)
+    )
+    return base_mu
+
+
+# =============================================================================
 # PyTensor Transformation Functions
 # =============================================================================
 
@@ -168,49 +242,59 @@ def geometric_adstock_pytensor(
     x: pt.TensorVariable,
     alpha: pt.TensorVariable,
     territory_idx: pt.TensorVariable,
+    l_max: int = 100,
 ) -> pt.TensorVariable:
     """
-    Apply geometric adstock transformation using PyTensor scan, respecting territory boundaries.
+    Apply geometric adstock transformation using a stateless windowed convolution.
     
     Adstock models the carryover effect of advertising:
-    adstock[t] = x[t] + alpha * adstock[t-1]
+    adstock[t] = sum_{delta=0}^{l_max-1} x[t-delta] * (alpha[territory[t]] ** delta) * (territory[t] == territory[t-delta])
     
-    CRITICAL: Resets adstock to 0 when territory_idx changes.
-    
-    Args:
-        x: Spend tensor (n_obs, n_channels)
-        alpha: Decay rate tensor (n_obs, n_channels) - already projected to observations
-        territory_idx: Territory index for each observation (n_obs,)
-    
-    Returns:
-        Adstocked tensor (n_obs, n_channels)
+    This implementation handles hierarchical alpha (n_territories, n_channels)
+    and uses a vectorized approach to ensure JAX stability on Windows.
     """
-    def step(x_t, territory_t, adstock_prev, territory_prev, alpha_t):
-        # 1 if same territory, 0 if different
-        is_same = pt.eq(territory_t, territory_prev)
-        
-        # Calculate carryover
-        carryover = alpha_t * adstock_prev
-        
-        # if different territory, carryover becomes 0
-        qs = pt.switch(is_same, carryover, 0)
-        
-        return x_t + qs, territory_t
+    # 1. Dimensions
+    n_obs = x.shape[0]
+    n_channels = x.shape[1]
     
-    init_adstock = pt.zeros_like(x[0])
+    # 2. Adstock parameters aligned to timepoints
+    # a_obs: (n_obs, n_channels)
+    a_obs = pt.cast(alpha[territory_idx], "float64")
     
-    init_territory = pt.as_tensor(-1, dtype="int32")
+    # 3. Vectorized Window Sum
+    # We build the sum component by component but use explicit shapes
+    # to prevent JAX broadcasting confusion.
+    final_adstock = pt.zeros((n_obs, n_channels), dtype="float64")
     
-    result, _ = pytensor.scan(
-        fn=step,
-        sequences=[x, territory_idx, alpha],
-        outputs_info=[init_adstock, init_territory],
-        strict=True,
-    )
-    
-    # Result is a tuple (adstock_trace, territory_trace)
-    # Only adstock_trace is needed
-    return result[0]
+    for delta in range(l_max):
+        # Contribution from lag delta: spend[t-delta] * alpha^delta * mask
+        if delta == 0:
+            final_adstock += x
+        else:
+            # spend[t-delta]
+            shifted_x = pt.concatenate([
+                pt.zeros((delta, n_channels), dtype="float64"),
+                x[:-delta]
+            ], axis=0)
+            
+            # territory[t-delta]
+            shifted_territory = pt.concatenate([
+                pt.as_tensor([-1] * delta, dtype="int64"),
+                territory_idx[:-delta]
+            ], axis=0)
+            
+            # mask[t] = 1 if territory[t] == territory[t-delta]
+            # Use explicit reshape for JAX broadcasting safety
+            mask = pt.eq(territory_idx, shifted_territory).reshape((n_obs, 1))
+            
+            # weight[t] = alpha[territory[t]] ** delta
+            weight = pt.power(a_obs, pt.cast(delta, "float64"))
+            
+            # Add to adstock
+            contribution = pt.cast(shifted_x * weight * pt.cast(mask, "float64"), "float64")
+            final_adstock += contribution
+            
+    return final_adstock
 
 
 def hill_saturation_pytensor(
@@ -252,29 +336,48 @@ def build_hierarchical_mmm(
     y: "NDArray",
     territory_idx: "NDArray",
     n_territories: int,
-    l_max: int | None = None,
-    channel_names: list[str] | None = None,
-    feature_names: list[str] | None = None,
+    l_max: Optional[int] = None,
+    channel_names: Optional[List[str]] = None,
+    feature_names: Optional[List[str]] = None,
+    territory_names: Optional[List[str]] = None,
 ) -> pm.Model:
     """Build hierarchical MMM with Bayesian adstock and saturation."""
     # Use config defaults if not provided
     l_max = l_max if l_max is not None else L_MAX
     
+    # Validation
     n_obs = len(y)
-    n_channels = X_spend.shape[1]
-    n_features = X_features.shape[1]
-    n_season = X_season.shape[1]
-    
-    # Validate inputs (fail fast)
     if len(territory_idx) != n_obs:
-        raise ValueError(f"territory_idx length ({len(territory_idx)}) != n_obs ({n_obs})")
+        raise ValueError(f"territory_idx length ({len(territory_idx)}) must match y length ({n_obs})")
+    if len(X_spend) != n_obs:
+        raise ValueError(f"X_spend length ({len(X_spend)}) must match y length ({n_obs})")
+    if len(X_features) != n_obs:
+        raise ValueError(f"X_features length ({len(X_features)}) must match y length ({n_obs})")
+    if len(X_season) != n_obs:
+        raise ValueError(f"X_season length ({len(X_season)}) must match y length ({n_obs})")
+    
+    # Ensure inputs are correctly typed for JAX/XLA
+    X_spend_f64 = np.asarray(X_spend, dtype="float64")
+    X_features_f64 = np.asarray(X_features, dtype="float64")
+    X_season_f64 = np.asarray(X_season, dtype="float64")
+    territory_idx_i64 = np.asarray(territory_idx, dtype="int64")
+    y_f64 = np.asarray(y, dtype="float64")
+
+    # Coordinates
+    n_obs, n_channels = X_spend_f64.shape
+    
+    # Fallback for territory names if not provided
+    if territory_names is None:
+        # Use n_territories from signature or detect from data
+        n_t = n_territories if n_territories is not None else len(np.unique(territory_idx_i64))
+        territory_names = [f"territory_{i}" for i in range(n_t)]
     
     coords = {
-        "territory": list(range(n_territories)),
         "channel": channel_names or [f"channel_{i}" for i in range(n_channels)],
-        "feature": feature_names or [f"feature_{i}" for i in range(n_features)],
-        "season": [f"season_{i}" for i in range(n_season)],
-        # NOTE: "obs" removed - size varies between train/test
+        "territory": territory_names,
+        "feature": feature_names or [f"feature_{i}" for i in range(X_features_f64.shape[1])],
+        "season": [f"season_{i}" for i in range(X_season_f64.shape[1])],
+        "obs": np.arange(n_obs, dtype="int64"),
     }
     
     with pm.Model(coords=coords) as model:
@@ -282,11 +385,11 @@ def build_hierarchical_mmm(
         # DATA CONTAINERS (pm.Data allows updating for prediction)
         # ============================================
         
-        X_spend_data = pm.Data("X_spend", X_spend)
-        X_features_data = pm.Data("X_features", X_features)
-        X_season_data = pm.Data("X_season", X_season)
-        territory_idx_data = pm.Data("territory_idx", territory_idx)
-        y_obs_data = pm.Data("y_obs_data", y)
+        X_spend_data = pm.Data("X_spend", X_spend_f64)
+        X_features_data = pm.Data("X_features", X_features_f64)
+        X_season_data = pm.Data("X_season", X_season_f64)
+        territory_idx_data = pm.Data("territory_idx", territory_idx_i64)
+        y_obs_data = pm.Data("y_obs_data", y_f64)
         
         # ============================================
         # BAYESIAN ADSTOCK (carryover effect)
@@ -446,7 +549,7 @@ def build_hierarchical_mmm(
         # ============================================
         
         m0 = PRIOR_HORSESHOE_M0  # Expected number of relevant features
-        D = n_features
+        D = X_features_f64.shape[1]
         
         tau0 = m0 / (D - m0 + 1e-8) / np.sqrt(n_obs)
         
@@ -524,13 +627,13 @@ def build_hierarchical_mmm(
 
 def fit_model(
     model: pm.Model,
-    draws: int | None = None,
-    tune: int | None = None,
-    chains: int | None = None,
-    target_accept: float | None = None,
-    max_treedepth: int | None = None,
-    sampler: str | None = None,
-    random_seed: int | None = None,
+    draws: Optional[int] = None,
+    tune: Optional[int] = None,
+    chains: Optional[int] = None,
+    target_accept: Optional[float] = None,
+    max_treedepth: Optional[int] = None,
+    sampler: Optional[str] = None,
+    random_seed: Optional[int] = None,
 ) -> az.InferenceData:
     """
     Fit model using NUTS sampler.
@@ -633,7 +736,7 @@ def predict(
     idata: az.InferenceData,
     return_hdi: bool = False,
     hdi_prob: float = 0.94,
-) -> "NDArray" | dict:
+) -> Union["NDArray", Dict]:
     """
     Generate posterior predictive mean (and optionally HDI).
     
@@ -779,7 +882,7 @@ def compute_channel_contributions(
     idata: az.InferenceData,
     X_spend: "NDArray",
     territory_idx: "NDArray",
-    channel_names: list[str],
+    channel_names: List[str],
 ) -> pd.DataFrame:
     """
     Compute channel contributions using learned transformations.
@@ -787,15 +890,6 @@ def compute_channel_contributions(
     CRITICAL: This function properly applies posterior mean adstock and saturation
     transformations before computing contributions, avoiding the error of using
     raw spend values directly.
-    
-    Args:
-        idata: ArviZ InferenceData with posterior samples
-        X_spend: Raw spend array (n_obs, n_channels)
-        territory_idx: Territory index for each observation (n_obs,)
-        channel_names: List of channel names
-    
-    Returns:
-        DataFrame with contribution metrics per channel
     """
     # Extract posterior means
     beta_channel = idata.posterior["beta_channel"].mean(dim=["chain", "draw"]).values
@@ -834,7 +928,7 @@ def compute_roi_with_hdi(
     idata: az.InferenceData,
     X_spend: "NDArray",
     territory_idx: "NDArray",
-    channel_names: list[str],
+    channel_names: List[str],
     hdi_prob: float = 0.94,
     n_samples: int = 500,
 ) -> pd.DataFrame:
@@ -919,8 +1013,8 @@ def compute_channel_contributions_by_territory(
     idata: az.InferenceData,
     X_spend: "NDArray",
     territory_idx: "NDArray",
-    channel_names: list[str],
-    territory_names: list[str],
+    channel_names: List[str],
+    territory_names: List[str],
 ) -> pd.DataFrame:
     """
     Compute channel contributions PER TERRITORY.
@@ -980,206 +1074,3 @@ def compute_channel_contributions_by_territory(
     
     return pd.DataFrame(results)
 
-
-def compute_marginal_roas_custom(
-    model: pm.Model,
-    idata: az.InferenceData,
-    X_spend: "NDArray",
-    X_features: "NDArray",
-    X_season: "NDArray",
-    territory_idx: "NDArray",
-    y_base: "NDArray",
-    channel_names: list[str],
-    spend_increases: list[float] | None = None,
-    scaling_factor: float = 1.0,
-) -> pd.DataFrame:
-    """
-    Compute marginal ROAS at different spend levels for the custom hierarchical model.
-    
-    For each channel, simulates increasing spend by different percentages
-    and measures the marginal return on each additional dollar spent.
-    
-    Args:
-        model: PyMC model with mutable data
-        idata: Fitted InferenceData
-        X_spend: Baseline spend array (n_obs, n_channels)
-        X_features: Features array (n_obs, n_features)
-        X_season: Seasonality array (n_obs, n_season)
-        territory_idx: Territory index for each observation (n_obs,)
-        y_base: Baseline y values for prediction (n_obs,)
-        channel_names: List of channel names
-        spend_increases: Percentage increases to test (default: [0, 10, 25, 50, 100])
-        scaling_factor: Factor to convert log-scale predictions to linear revenue
-    
-    Returns:
-        DataFrame with columns: channel, spend_increase_pct, marginal_roas
-    """
-    if spend_increases is None:
-        spend_increases = [0, 10, 25, 50, 100]
-    
-    n_obs, n_channels = X_spend.shape
-    results = []
-    
-    # Get baseline prediction
-    with model:
-        pm.set_data({
-            "X_spend": X_spend,
-            "X_features": X_features,
-            "X_season": X_season,
-            "territory_idx": territory_idx,
-            "y_obs_data": y_base,
-        })
-        ppc_base = pm.sample_posterior_predictive(idata, predictions=True, 
-                                                   random_seed=42, progressbar=False)
-        y_pred_base = ppc_base.predictions["y_obs"].mean(dim=["chain", "draw"]).values
-    
-    base_revenue = np.expm1(y_pred_base).sum() * scaling_factor
-    
-    for c_idx, channel in enumerate(channel_names):
-        base_spend = X_spend[:, c_idx].sum()
-        
-        for pct in spend_increases:
-            if pct == 0:
-                results.append({
-                    "channel": channel,
-                    "spend_increase_pct": pct,
-                    "marginal_roas": 0.0,
-                })
-                continue
-            
-            # Modify spend for this channel
-            X_spend_modified = X_spend.copy()
-            X_spend_modified[:, c_idx] = X_spend[:, c_idx] * (1 + pct / 100)
-            
-            new_spend = X_spend_modified[:, c_idx].sum()
-            delta_spend = new_spend - base_spend
-            
-            # Predict with modified spend
-            with model:
-                pm.set_data({
-                    "X_spend": X_spend_modified,
-                    "X_features": X_features,
-                    "X_season": X_season,
-                    "territory_idx": territory_idx,
-                    "y_obs_data": y_base,
-                })
-                ppc_new = pm.sample_posterior_predictive(idata, predictions=True,
-                                                          random_seed=42, progressbar=False)
-                y_pred_new = ppc_new.predictions["y_obs"].mean(dim=["chain", "draw"]).values
-            
-            new_revenue = np.expm1(y_pred_new).sum() * scaling_factor
-            delta_revenue = new_revenue - base_revenue
-            
-            marginal_roas = delta_revenue / delta_spend if delta_spend > 0 else 0.0
-            
-            results.append({
-                "channel": channel,
-                "spend_increase_pct": pct,
-                "marginal_roas": float(marginal_roas),
-            })
-    
-    return pd.DataFrame(results)
-
-
-def compute_marginal_roas_by_territory(
-    model: pm.Model,
-    idata: az.InferenceData,
-    X_spend: "NDArray",
-    X_features: "NDArray",
-    X_season: "NDArray",
-    territory_idx: "NDArray",
-    y_base: "NDArray",
-    channel_names: list[str],
-    territory_names: list[str],
-    spend_increases: list[float] | None = None,
-    scaling_factor: float = 1.0,
-) -> pd.DataFrame:
-    """
-    Compute marginal ROAS at different spend levels BY TERRITORY.
-    
-    For each territory and channel, simulates increasing spend and measures
-    the marginal return, respecting the hierarchical model structure.
-    
-    Args:
-        model: PyMC model with mutable data
-        idata: Fitted InferenceData
-        X_spend: Baseline spend array (n_obs, n_channels)
-        X_features: Features array (n_obs, n_features)
-        X_season: Seasonality array (n_obs, n_season)
-        territory_idx: Territory index for each observation (n_obs,)
-        y_base: Baseline y values for prediction (n_obs,)
-        channel_names: List of channel names
-        territory_names: List of territory names
-        spend_increases: Percentage increases to test (default: [10, 25, 50])
-        scaling_factor: Factor to convert log-scale predictions to linear revenue
-    
-    Returns:
-        DataFrame with columns: territory, channel, spend_increase_pct, marginal_roas
-    """
-    if spend_increases is None:
-        spend_increases = [10, 25, 50]  # Fewer levels for territory to reduce computation
-    
-    n_obs, n_channels = X_spend.shape
-    n_territories = len(territory_names)
-    results = []
-    
-    # Get baseline prediction (full model)
-    with model:
-        pm.set_data({
-            "X_spend": X_spend,
-            "X_features": X_features,
-            "X_season": X_season,
-            "territory_idx": territory_idx,
-            "y_obs_data": y_base,
-        })
-        ppc_base = pm.sample_posterior_predictive(idata, predictions=True, 
-                                                   random_seed=42, progressbar=False)
-        y_pred_base = ppc_base.predictions["y_obs"].mean(dim=["chain", "draw"]).values
-    
-    # Compute baseline revenue per territory
-    base_revenue_by_territory = {}
-    for t_idx, territory in enumerate(territory_names):
-        mask = (territory_idx == t_idx)
-        base_revenue_by_territory[territory] = np.expm1(y_pred_base[mask]).sum() * scaling_factor
-    
-    for c_idx, channel in enumerate(channel_names):
-        for pct in spend_increases:
-            # Modify spend for this channel
-            X_spend_modified = X_spend.copy()
-            X_spend_modified[:, c_idx] = X_spend[:, c_idx] * (1 + pct / 100)
-            
-            # Predict with modified spend
-            with model:
-                pm.set_data({
-                    "X_spend": X_spend_modified,
-                    "X_features": X_features,
-                    "X_season": X_season,
-                    "territory_idx": territory_idx,
-                    "y_obs_data": y_base,
-                })
-                ppc_new = pm.sample_posterior_predictive(idata, predictions=True,
-                                                          random_seed=42, progressbar=False)
-                y_pred_new = ppc_new.predictions["y_obs"].mean(dim=["chain", "draw"]).values
-            
-            # Compute territory-level marginal ROAS
-            for t_idx, territory in enumerate(territory_names):
-                mask = (territory_idx == t_idx)
-                
-                base_spend_territory = X_spend[mask, c_idx].sum()
-                new_spend_territory = X_spend_modified[mask, c_idx].sum()
-                delta_spend = new_spend_territory - base_spend_territory
-                
-                base_revenue = base_revenue_by_territory[territory]
-                new_revenue = np.expm1(y_pred_new[mask]).sum() * scaling_factor
-                delta_revenue = new_revenue - base_revenue
-                
-                marginal_roas = delta_revenue / delta_spend if delta_spend > 0 else 0.0
-                
-                results.append({
-                    "territory": territory,
-                    "channel": channel,
-                    "spend_increase_pct": pct,
-                    "marginal_roas": float(marginal_roas),
-                })
-    
-    return pd.DataFrame(results)

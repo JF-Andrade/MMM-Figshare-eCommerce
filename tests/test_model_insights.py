@@ -24,13 +24,16 @@ def mock_mmm() -> MagicMock:
     alpha_data = np.random.beta(2, 2, (4, 1000, 2))  # chains, draws, channels
     lam_data = np.random.gamma(3, 1, (4, 1000, 2))
 
+    # Mock alpha (adstock)
     mock_alpha = MagicMock()
-    mock_alpha.dims = ["chain", "draw", "channel"]
-    mock_alpha.sel.return_value.values.flatten.return_value = alpha_data[:, :, 0].flatten()
+    mock_alpha.values = alpha_data
+    # Support .mean(dim=...).values
+    mock_alpha.mean.return_value.values = np.mean(alpha_data, axis=(0, 1))
 
+    # Mock lam (saturation)
     mock_lam = MagicMock()
-    mock_lam.dims = ["chain", "draw", "channel"]
-    mock_lam.sel.return_value.values.flatten.return_value = lam_data[:, :, 0].flatten()
+    mock_lam.values = lam_data
+    mock_lam.mean.return_value.values = np.mean(lam_data, axis=(0, 1))
 
     mock_posterior.__contains__ = lambda self, x: x in ["alpha", "lam"]
     mock_posterior.__getitem__ = lambda self, x: mock_alpha if x == "alpha" else mock_lam

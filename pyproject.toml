@@ -17,6 +17,9 @@ dependencies = [
     "pymc>=5.10.0",
     "pymc-marketing>=0.4.0",
     "arviz>=0.17.0",
+    "arviz-base",
+    "arviz-stats",
+    "arviz-plots",
     # Experiment Tracking
     "mlflow>=2.10.0",
     # Data

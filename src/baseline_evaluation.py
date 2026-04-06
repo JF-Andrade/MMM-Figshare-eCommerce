@@ -55,7 +55,6 @@ def evaluate_ridge_model(
     y_pred_train = pipeline.predict(X_train)
     y_pred_test = pipeline.predict(X_test)
 
-
     r2_train = r2_score(y_train, y_pred_train)
     r2_test = r2_score(y_test, y_pred_test)
     mape_train = mean_absolute_percentage_error(y_train, y_pred_train) * 100
@@ -91,40 +90,29 @@ def compute_ridge_roi(
     Effect = Coeff * (X - Mean) / Std
     Unit Effect = Coeff / Std
     
-    If log-log model: Coeff is elasticity (% change in y / % change in x)
-    If spend is normalized 0-1: Input X is (Spend / Max)
-    
     Args:
         pipeline: Fitted sklearn pipeline with 'scaler' and 'ridge'.
-        X: Feature DataFrame (raw or pre-processed depending on pipeline input).
+        X: Feature DataFrame.
         channels: List of channel names.
-        y_mean: Mean of target variable (log scale if log-target).
-        channel_max_dict: Dictionary of max spend per channel (if 0-1 normalized).
+        y_mean: Mean of target variable.
+        channel_max_dict: Dictionary of max spend per channel.
 
     Returns:
         DataFrame with channel, coefficients, and ROI metrics.
     """
     model = pipeline.named_steps["ridge"]
     scaler = pipeline.named_steps["scaler"]
-    
+    feature_names = X.columns.tolist()
     stats = []
     
-    # Get scaler mean and scale for features
-    # Note: Features have _sat suffix (e.g., GOOGLE_SPEND_sat)
-    feature_names = X.columns.tolist()
-    
     for ch in channels:
-        # Map channel name to feature name with _sat suffix
-        feature_name = f"{ch}_sat"
-        if feature_name not in feature_names:
-            # Fallback: try original name
-            feature_name = ch
+        feature_name = f"{ch}_sat" if f"{ch}_sat" in feature_names else ch
         if feature_name not in feature_names:
             print(f"Warning: Channel {ch} not found in features, skipping")
             continue
             
         stats.append(_get_ridge_channel_stats(
-            model, scaler, feature_names, ch, feature_name, channel_max_dict
+            model, scaler, feature_names, ch, feature_name, channel_max_dict, y_mean
         ))
         
     return pd.DataFrame(stats).sort_values("importance", ascending=False)
@@ -136,22 +124,24 @@ def _get_ridge_channel_stats(
     feature_names: list[str], 
     ch: str,
     feature_name: str,
-    channel_max_dict: dict[str, float] | None
+    channel_max_dict: dict[str, float] | None,
+    y_mean: float = 1.0,
 ) -> dict:
     """Extract and descale Ridge coefficients for a single channel."""
     col_idx = feature_names.index(feature_name)
-    
     coef = model.coef_[col_idx]
     scale = scaler.scale_[col_idx]
     
-    # If input was 0-1 normalized, account for channel_max
+    coefficient_original = coef / scale
     max_spend = channel_max_dict.get(ch, 1.0) if channel_max_dict else 1.0
+    roi = (coefficient_original * y_mean) / max_spend
     
     return {
-        "channel": ch,
+        "channel": ch.replace("_SPEND", "").replace("_sat", ""),
         "coefficient": coef,
+        "coefficient_original": coefficient_original,
+        "roi": roi,
         "std_dev_input": scale,
         "max_spend": max_spend,
         "importance": abs(coef)
     }
-

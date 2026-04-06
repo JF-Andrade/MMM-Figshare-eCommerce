@@ -32,8 +32,6 @@ from src.models.hierarchical_bayesian import (
     check_convergence,
     compute_channel_contributions,
     compute_channel_contributions_by_territory,
-    compute_marginal_roas_by_territory,
-    compute_marginal_roas_custom,
     compute_roi_with_hdi,
     evaluate,
     hill_saturation_numpy,
@@ -244,13 +242,9 @@ def optimize_hierarchical_budget(
         """Wrapper for scalar inputs using imported function."""
         return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
 
-    # 0. Validate saturation params have required max_spend (FIX #2)
     for p in saturation_params:
-        if "max_spend" not in p or p["max_spend"] <= 0:
-            raise ValueError(
-                f"Channel '{p.get('channel', 'unknown')}' missing valid 'max_spend'. "
-                "This must match the normalization used during model training."
-            )
+        if p.get("max_spend", 0) <= 0:
+            raise ValueError(f"Channel '{p.get('channel', 'unknown')}' missing valid 'max_spend'.")
     
     # 1. Prepare Data - extract L and k from saturation params
     model_data = []
@@ -264,63 +258,41 @@ def optimize_hierarchical_budget(
 
         L = params.get("L_mean", 0.3)
         k = params.get("k_mean", 2.0)
-        max_spend = params["max_spend"]  # Required field now
+        max_spend = params["max_spend"]
 
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
-        
-        # Normalize spend to [0,1] scale (L and k were calibrated on normalized data)
         avg_spend_norm = avg_spend / max_spend if max_spend > 0 else 0.5
-
-        if total_spend <= 0 or contribution <= 0:
-            # FIX #10: Handle negative/zero contribution gracefully
-            # These channels cannot be optimized properly (would imply infinite ROAS or destruction)
-            # We fix them at current spend in the optimizer by setting bounds = current
-            model_data.append({
-                "channel": ch,
-                "scale": 0,  # Zero scale means objective function ignores it
-                "L": L,
-                "k": k,
-                "current_spend": total_spend,
-                "avg_spend": avg_spend,
-                "max_spend": max_spend,
-                "is_fixed": True  # Flag to fix this channel
-            })
-            continue
-
-        # Use normalized spend for Hill saturation  
+        beta = params.get("beta_mean", 1.0)
         sat_current = hill_saturation(avg_spend_norm, L, k)
         
-        # Avoid division by zero if saturation is tiny
-        if sat_current < 1e-9:
-             scale = 0
-             is_fixed = True
-        else:
-             scale = contribution / (n_obs * sat_current)
-             is_fixed = False
+        is_fixed = total_spend <= 0 or contribution <= 0 or beta <= 0
 
         model_data.append({
             "channel": ch,
-            "scale": scale,
+            "beta": beta,
             "L": L,
             "k": k,
             "current_spend": total_spend,
             "avg_spend": avg_spend,
             "max_spend": max_spend,
-            "is_fixed": is_fixed
+            "is_fixed": is_fixed,
+            "sat_current": sat_current,
         })
 
-    # 2. Objective Function using Hill saturation (with normalized spend)
+    # 2. Objective Function using Multiplicative formulation
     def objective(avg_spends):
-        total_contrib = 0
+        log_multiplier_sum = 0.0
         for i, avg_x in enumerate(avg_spends):
             m = model_data[i]
-            if m["scale"] > 0:
-                # Normalize spend before Hill function
+            if not m["is_fixed"]:
                 max_sp = m.get("max_spend", 1)
                 avg_x_norm = avg_x / max_sp if max_sp > 0 else avg_x
                 sat = hill_saturation(avg_x_norm, m["L"], m["k"])
-                total_contrib += m["scale"] * n_obs * sat
-        return -total_contrib
+                log_multiplier_sum += np.log1p(m["beta"] * sat)
+            else:
+                log_multiplier_sum += np.log1p(m["beta"] * m["sat_current"])
+                
+        return -log_multiplier_sum
 
     # 3. Constraints & Bounds
     x0 = [m["avg_spend"] for m in model_data]
@@ -332,8 +304,6 @@ def optimize_hierarchical_budget(
     bounds_list = []
     for m in model_data:
         current_avg = m["avg_spend"]
-        
-        # FIX #10: If channel is fixed (e.g. negative contribution), lock it to current spend
         if m.get("is_fixed", False):
             lb, ub = current_avg, current_avg
         elif current_avg > 0:
@@ -343,7 +313,6 @@ def optimize_hierarchical_budget(
             lb, ub = 0, 0
         bounds_list.append((lb, ub))
 
-    # 4. Optimize
     # 4. Optimize
     try:
         initial_fun = objective(x0)
@@ -357,25 +326,17 @@ def optimize_hierarchical_budget(
             options={"disp": False, "ftol": 1e-6, "maxiter": 100},
         )
         
-        # FIX #11: SLSQP often returns Exit Mode 8 (Positive directional derivative) for complex MMMs
-        # This is strictly a "failure" but usually contains a valid, better solution.
-        # We accept the result if it improves the objective function.
-        if result.success:
+        # Accept if result is successful or improves objective
+        if result.success or result.fun < initial_fun:
             success = True
             optimized_x = result.x
         else:
-            final_fun = result.fun
-            if final_fun < initial_fun:
-                print(f"Warning: Optimization finished with status '{result.message}' but improved objective. Accepting result.")
-                success = True
-                optimized_x = result.x
-            else:
-                print(f"Warning: Optimization failed ({result.message}) and did not improve. Returning current allocation.")
-                success = False
-                optimized_x = x0
+            print(f"Warning: Optimization failed ({result.message}). Using current allocation.")
+            success = False
+            optimized_x = x0
 
     except Exception as e:
-        print(f"Warning: Optimization crashed ({e}). Returning current allocation.")
+        print(f"Warning: Optimization error: {e}")
         success = False
         optimized_x = x0
 
@@ -397,13 +358,16 @@ def optimize_hierarchical_budget(
                 mroas_lookup[ch] = {}
             mroas_lookup[ch][pct] = mroas
 
+    # Extract total model predicted revenue for accurate lift scaling
     current_total_contrib = contrib_df["contribution"].sum()
-    lift_absolute = 0.0
+    total_predicted = contrib_df.attrs.get("total_predicted_revenue", current_total_contrib * 2)
+
+    # Compute current and new total log multipliers
+    log_curr = 0.0
+    log_new = 0.0
 
     for i, m in enumerate(model_data):
-        # Use robust final spends (from optimization or fallback)
         opt_avg = final_spends[i]
-        
         opt_total = opt_avg * n_obs
         current_total = m["current_spend"]
         delta_spend = opt_total - current_total
@@ -411,28 +375,19 @@ def optimize_hierarchical_budget(
         change_pct = (
             (delta_spend / current_total * 100) if current_total > 0 else 0.0
         )
-
-        # FIX #7: Calculate lift using exact Hill saturation difference
-        # instead of marginal ROAS point estimate
-        if delta_spend != 0 and m["scale"] > 0:
-            max_sp = m["max_spend"]
-            L, k = m["L"], m["k"]
-            
-            # Current and optimal normalized spend
-            x_curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else 0.5
-            x_opt_norm = opt_avg / max_sp if max_sp > 0 else 0.5
-            
-            # Clamp to avoid extrapolation beyond 2x max historical spend
-            x_opt_norm = min(x_opt_norm, 2.0)
-            
-            # Saturation at current and optimal points
-            s_curr = hill_saturation(x_curr_norm, L, k)
-            s_opt = hill_saturation(x_opt_norm, L, k)
-            
-            # Lift = scale × n_obs × (S_opt - S_curr)
-            # This is EXACT, not a first-order approximation
-            lift_channel = m["scale"] * n_obs * (s_opt - s_curr)
-            lift_absolute += lift_channel
+        
+        max_sp = m.get("max_spend", 1)
+        L, k = m["L"], m["k"]
+        
+        x_curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else 0.5
+        x_opt_norm = opt_avg / max_sp if max_sp > 0 else 0.5
+        x_opt_norm = min(x_opt_norm, 2.0) # Clamp
+        
+        s_curr = hill_saturation(x_curr_norm, L, k)
+        s_opt = hill_saturation(x_opt_norm, L, k)
+        
+        log_curr += np.log1p(m["beta"] * s_curr)
+        log_new += np.log1p(m["beta"] * s_opt)
 
         optimized_allocation.append({
             "channel": m["channel"],
@@ -440,6 +395,12 @@ def optimize_hierarchical_budget(
             "optimal_spend": float(opt_total),
             "change_pct": float(change_pct),
         })
+
+    # Multiplicative Lift AC-5: R_new = R_old * (prod_new / prod_curr)
+    # Ratio of products = exp(log_new - log_curr)
+    multiplier_ratio = np.exp(log_new - log_curr)
+    optimal_total_revenue = total_predicted * multiplier_ratio
+    lift_absolute = optimal_total_revenue - total_predicted
 
     optimal_total_contrib = current_total_contrib + lift_absolute
     lift_pct = (
@@ -502,35 +463,41 @@ def optimize_budget_by_territory(
         # Use max_spend from params with fallback to total_spend
         max_spend = params.get("max_spend", total_spend) if params.get("max_spend", 0) > 0 else total_spend
         
+        beta = params.get("beta_mean", 1.0)
+        
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
         avg_spend_norm = avg_spend / max_spend if max_spend > 0 else 0.5
 
-        if total_spend <= 0 or contribution <= 0:
-            scale = 0
-        else:
-            sat_current = hill_saturation(avg_spend_norm, L, k)
-            scale = contribution / (n_obs * sat_current + 1e-9)
+        is_fixed = False
+        sat_current = hill_saturation(avg_spend_norm, L, k)
+
+        if total_spend <= 0 or beta <= 0:
+            is_fixed = True
 
         model_data.append({
             "channel": ch,
-            "scale": scale,
+            "beta": beta,
             "L": L,
             "k": k,
             "current_spend": total_spend,
             "avg_spend": avg_spend,
             "max_spend": max_spend,
+            "is_fixed": is_fixed,
+            "sat_current": sat_current,
         })
 
     def objective(avg_spends):
-        total_contrib = 0
+        log_multiplier_sum = 0.0
         for i, avg_x in enumerate(avg_spends):
             m = model_data[i]
-            if m["scale"] > 0:
+            if not m["is_fixed"]:
                 max_sp = m.get("max_spend", 1)
                 avg_x_norm = avg_x / max_sp if max_sp > 0 else avg_x
                 sat = hill_saturation(avg_x_norm, m["L"], m["k"])
-                total_contrib += m["scale"] * n_obs * sat
-        return -total_contrib
+                log_multiplier_sum += np.log1p(m["beta"] * sat)
+            else:
+                log_multiplier_sum += np.log1p(m["beta"] * m["sat_current"])
+        return -log_multiplier_sum
 
     x0 = [m["avg_spend"] for m in model_data]
     avg_budget = sum(x0)
@@ -556,8 +523,12 @@ def optimize_budget_by_territory(
     )
 
     allocation = []
-    current_total_contrib = 0
-    optimal_total_contrib = 0
+    
+    current_total_contrib = contrib_territory_df["contribution"].sum()
+    total_predicted = contrib_territory_df.attrs.get("total_predicted_revenue", current_total_contrib * 2)
+
+    log_curr = 0.0
+    log_new = 0.0
 
     for i, m in enumerate(model_data):
         opt_avg = result.x[i] if result.success else m["avg_spend"]
@@ -568,17 +539,16 @@ def optimize_budget_by_territory(
             else 0.0
         )
 
-        if m["scale"] > 0:
-            max_sp = m.get("max_spend", 1)
-            curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else m["avg_spend"]
-            opt_norm = opt_avg / max_sp if max_sp > 0 else opt_avg
-            curr_c = m["scale"] * n_obs * hill_saturation(curr_norm, m["L"], m["k"])
-            opt_c = m["scale"] * n_obs * hill_saturation(opt_norm, m["L"], m["k"])
-        else:
-            curr_c, opt_c = 0, 0
-
-        current_total_contrib += curr_c
-        optimal_total_contrib += opt_c
+        max_sp = m.get("max_spend", 1)
+        curr_norm = m["avg_spend"] / max_sp if max_sp > 0 else 0.5
+        opt_norm = opt_avg / max_sp if max_sp > 0 else 0.5
+        opt_norm = min(opt_norm, 2.0)
+        
+        s_curr = hill_saturation(curr_norm, m["L"], m["k"])
+        s_opt = hill_saturation(opt_norm, m["L"], m["k"])
+        
+        log_curr += np.log1p(m["beta"] * s_curr)
+        log_new += np.log1p(m["beta"] * s_opt)
 
         allocation.append({
             "territory": territory,
@@ -587,6 +557,12 @@ def optimize_budget_by_territory(
             "optimal_spend": float(opt_total),
             "change_pct": float(change_pct),
         })
+
+    multiplier_ratio = np.exp(log_new - log_curr)
+    optimal_total_revenue = total_predicted * multiplier_ratio
+    lift_absolute = optimal_total_revenue - total_predicted
+    
+    optimal_total_contrib = current_total_contrib + lift_absolute
 
     lift_pct = (
         ((optimal_total_contrib - current_total_contrib) / current_total_contrib * 100)
@@ -843,27 +819,18 @@ def log_predictions(
     print("Saved predictions.json")
 
 
-def compute_scaling_factor(m_data: dict) -> float:
-    """Compute the log-to-linear scaling factor for contributions."""
-    total_revenue = m_data["df_train"][TARGET_COL].sum()
-    mean_log_revenue = m_data["df_train"]["y_log"].mean()
-    n_obs_train = len(m_data["df_train"])
-    return total_revenue / (mean_log_revenue * n_obs_train + EPSILON)
 
 
 def log_global_contributions(
     idata: az.InferenceData,
     m_data: dict,
-    scaling_factor: float,
 ) -> pd.DataFrame:
     """Compute and log global channel contributions and ROI."""
     print("Computing global contributions...")
     contrib_df = compute_channel_contributions(idata, m_data)
 
-    # Scale contributions
-    for col in ["contribution_mean", "contribution_hdi_3%", "contribution_hdi_97%"]:
-        contrib_df[col] = contrib_df[col] * scaling_factor
-
+    # compute_channel_contributions now returns linear dollars via counterfactual marginals.
+    # No scaling factor is required.
     contrib_df = contrib_df.sort_values("contribution_mean", ascending=False)
     mlflow.log_dict(contrib_df.to_dict(orient="records"), "metrics/global_contributions.json")
 
@@ -873,15 +840,12 @@ def log_global_contributions(
 def log_roi_with_hdi(
     idata: az.InferenceData,
     m_data: dict,
-    scaling_factor: float,
     hdi_prob: float = 0.94,
 ) -> pd.DataFrame:
     """Compute and log ROI with HDI uncertainty intervals."""
     roi_df = compute_roi_with_hdi(idata, m_data, hdi_prob=hdi_prob)
 
-    # Scale ROI
-    for col in ["roi_mean", "roi_hdi_3%", "roi_hdi_97%"]:
-        roi_df[col] = roi_df[col] * scaling_factor
+    # ROI is already in correct linear scale.
 
     roi_df = roi_df.sort_values("roi_mean", ascending=False)
     mlflow.log_dict(roi_df.to_dict(orient="records"), "metrics/roi_hdi.json")
@@ -892,15 +856,12 @@ def log_regional_metrics(
     idata: az.InferenceData,
     m_data: dict,
     regions: list[str],
-    scaling_factor: float,
 ) -> pd.DataFrame:
     """Compute and log per-region channel contributions."""
     print("Computing regional contributions...")
     regional_df = compute_channel_contributions_by_territory(idata, m_data, regions)
 
-    # Scale
-    for col in ["contribution_mean", "contribution_hdi_3%", "contribution_hdi_97%"]:
-        regional_df[col] = regional_df[col] * scaling_factor
+    # Regional contributions are already in linear scale.
 
     mlflow.log_dict(regional_df.to_dict(orient="records"), "metrics/regional_contributions.json")
     return regional_df
@@ -962,9 +923,16 @@ def compute_marginal_roas(
         # Normalize to [0,1] scale (L and k were calibrated on normalized data)
         x_current = avg_spend / max_spend if max_spend > 0 else 0.5
         
-        # Estimate β from current observation: β = Contribution / S(x_current)
+        # Extract full model expected revenue (if available via counterfactual math)
+        # to correctly scale the multiplicative derivative into linear dollars.
+        # Fallback to base_contribution (legacy behavior) if not found.
+        total_predicted = contributions_df.attrs.get("total_predicted_revenue", base_contribution * 2) 
+        R_avg = total_predicted / n_obs if n_obs > 0 else total_predicted
+        
+        # Use true posterior beta (AC-4 requirement)
+        beta_mean = params.get("beta_mean", 1.0)
+        
         s_current = (x_current ** k) / (L ** k + x_current ** k + 1e-8)
-        beta = base_contribution / (s_current + 1e-8)
         
         for pct in spend_increase_pcts:
             multiplier = 1 + pct / 100.0
@@ -987,8 +955,9 @@ def compute_marginal_roas(
             denominator = np.power(L_pow_k + x_pow_k, 2) + 1e-8
             dS_dx = numerator / denominator
             
-            # Marginal ROAS: dR/dS_raw = β × dS/dx × (1/max_spend)
-            mroas = beta * dS_dx / max_spend if max_spend > 0 else 0
+            # Marginal ROAS: dR/dS_raw = R_avg × β × dS/dx × (1/max_spend)
+            # This is the exact partial derivative of the expected multiplicative model
+            mroas = R_avg * beta_mean * dS_dx / max_spend if max_spend > 0 else 0
             
             # Compute saturation at new spend level
             s_new = x_pow_k / (L_pow_k + x_pow_k + 1e-8)

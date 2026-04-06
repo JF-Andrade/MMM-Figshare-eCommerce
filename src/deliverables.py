@@ -52,12 +52,17 @@ def _extract_posterior_parameters(
     alpha_channel = posterior["alpha_channel"].mean(dim=["chain", "draw"]).values
     L_channel = posterior["L_channel"].mean(dim=["chain", "draw"]).values
     k_channel = posterior["k_channel"].mean(dim=["chain", "draw"]).values
+    beta_channel = posterior["beta_channel"].mean(dim=["chain", "draw"]).values
+    
     # Territory-level parameters (read directly, not as offsets)
     alpha_territory = posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
     alpha_territory = np.clip(alpha_territory, 0.01, 0.99)
     
     L_territory = posterior["L_territory"].mean(dim=["chain", "draw"]).values
     L_territory = np.clip(L_territory, 0.01, None)
+    
+    # We add beta_channel_territory as offset
+    beta_channel_territory = posterior["beta_channel_territory"].mean(dim=["chain", "draw"]).values
     
     # Build global params
     adstock_params = []
@@ -76,6 +81,7 @@ def _extract_posterior_parameters(
             "channel": channel,
             "L_mean": float(L_channel[c_idx]),
             "k_mean": float(k_channel[c_idx]),
+            "beta_mean": float(beta_channel[c_idx]),
         })
     
     # Build territory params
@@ -89,11 +95,16 @@ def _extract_posterior_parameters(
                 "channel": channel,
                 "alpha_mean": float(alpha_territory[t_idx, c_idx]),
             })
+            
+            # The territory beta effect is global beta + territory offset
+            beta_terr = float(beta_channel[c_idx] + beta_channel_territory[t_idx, c_idx])
+            
             saturation_territory_params.append({
                 "territory": territory,
                 "channel": channel,
                 "L_mean": float(L_territory[t_idx, c_idx]),
                 "k_mean": float(k_channel[c_idx]),
+                "beta_mean": beta_terr,
             })
     
     return adstock_params, saturation_params, adstock_territory_params, saturation_territory_params
@@ -103,23 +114,15 @@ def _compute_contributions(
     idata: "az.InferenceData",
     m_data: dict,
 ) -> pd.DataFrame:
-    """Compute channel contributions with log-to-linear conversion."""
+    """Compute counterfactual channel contributions in linear dollars."""
     contrib_df = compute_channel_contributions(
         idata,
         m_data["X_spend_train"],
         m_data["territory_idx_train"],
         m_data["channel_names"],
+        X_features=m_data.get("X_features_train"),
+        X_season=m_data.get("X_season_train"),
     )
-    
-    # Convert from log scale to linear $ scale
-    total_revenue = m_data["df_train"][TARGET_COL].sum()
-    mean_log_revenue = m_data["df_train"]["y_log"].mean()
-    n_obs_train = len(m_data["df_train"])
-    
-    scale_factor = total_revenue / (mean_log_revenue * n_obs_train + 1e-8)
-    
-    contrib_df["contribution_log"] = contrib_df["contribution"]
-    contrib_df["contribution"] = contrib_df["contribution_log"] * scale_factor
     
     # Override total_spend with raw spend (not normalized)
     spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
@@ -131,62 +134,46 @@ def _compute_contributions(
     contrib_df["roi"] = contrib_df["contribution"] / (contrib_df["total_spend"] + 1e-8)
     contrib_df["contribution_pct"] = contrib_df["contribution"] / contrib_df["contribution"].sum()
     
-    return contrib_df, scale_factor
+    return contrib_df
 
 
 def _compute_regional_metrics(
     idata: "az.InferenceData",
     m_data: dict,
     regions: list[str],
-    # REMOVED: scale_factor parameter - compute per region instead (FIX #1)
 ) -> list[dict]:
     """
-    Compute per-region channel metrics.
-    
-    FIX #1: Uses region-specific scale factor for log→linear conversion
-    instead of global scale factor. This is critical because the ratio
-    of linear revenue to log-revenue varies by territory.
+    Compute per-region channel metrics using counterfactual contributions.
     """
-    regional_data_list = []
+    # Computes contributions per territory correctly holding all other effects constant
+    reg_contrib_df = compute_channel_contributions_by_territory(
+        idata,
+        m_data["X_spend_train"],
+        m_data["territory_idx_train"],
+        m_data["channel_names"],
+        regions,
+        X_features=m_data.get("X_features_train"),
+        X_season=m_data.get("X_season_train"),
+    )
     
-    for r_idx, region_name in enumerate(regions):
-        mask = m_data["territory_idx_train"] == r_idx
-        if not np.any(mask):
-            continue
-        
-        X_sub = m_data["X_spend_train"][mask]
-        idx_sub = m_data["territory_idx_train"][mask]
-        df_sub = m_data["df_train"].iloc[np.where(mask)[0]]
-        
-        reg_contrib_df = compute_channel_contributions(
-            idata, X_sub, idx_sub, m_data["channel_names"]
-        )
-        
-        # FIX #1: Compute REGION-SPECIFIC scale factor
-        region_revenue = df_sub[TARGET_COL].sum()
-        region_mean_log = df_sub["y_log"].mean()
-        n_obs_region = len(df_sub)
-        region_scale_factor = region_revenue / (region_mean_log * n_obs_region + 1e-8)
-        
-        # Convert log→linear with region-specific scale
-        reg_contrib_df["contribution"] = reg_contrib_df["contribution"] * region_scale_factor
-        
-        spend_cols_raw = [c + "_SPEND" for c in m_data["channel_names"]]
-        for i, raw_col in enumerate(spend_cols_raw):
-            if raw_col in df_sub.columns:
-                reg_contrib_df.loc[i, "total_spend"] = df_sub[raw_col].sum()
-        
-        reg_contrib_df["roi"] = reg_contrib_df["contribution"] / (reg_contrib_df["total_spend"] + 1e-8)
-        
-        if reg_contrib_df["contribution"].sum() > 0:
-            reg_contrib_df["contribution_pct"] = reg_contrib_df["contribution"] / reg_contrib_df["contribution"].sum()
-        else:
-            reg_contrib_df["contribution_pct"] = 0.0
-        
-        for ch_row in reg_contrib_df.to_dict(orient="records"):
-            regional_data_list.append({"region": region_name, **ch_row})
+    # Override total_spend with raw spend (not normalized) by territory
+    df_train = m_data["df_train"]
+    for idx, row in reg_contrib_df.iterrows():
+        territory = row["territory"]
+        channel = row["channel"]
+        raw_col = f"{channel}_SPEND"
+        if raw_col in df_train.columns:
+            terr_mask = df_train[GEO_COL] == territory
+            raw_spend = df_train.loc[terr_mask, raw_col].sum()
+            reg_contrib_df.loc[idx, "total_spend"] = float(raw_spend)
+            
+    # Recalculate ROI and percentages
+    reg_contrib_df["roi"] = reg_contrib_df["contribution"] / (reg_contrib_df["total_spend"] + 1e-8)
     
-    return regional_data_list
+    # Calculate percentages grouped by territory
+    reg_contrib_df["contribution_pct"] = reg_contrib_df.groupby("territory")["contribution"].transform(lambda x: x / x.sum() if x.sum() > 0 else 0)
+    
+    return reg_contrib_df.to_dict(orient="records")
 
 
 def generate_all_deliverables(
@@ -223,14 +210,28 @@ def generate_all_deliverables(
     # 1. CONTRIBUTIONS AND ROI
     # =========================================================================
     print("\n[1/8] Computing contributions...")
-    contrib_df, scale_factor = _compute_contributions(idata, m_data)
+    contrib_df = _compute_contributions(idata, m_data)
     
     deliverables["contributions"] = contrib_df.to_dict(orient="records")
     deliverables["roi"] = contrib_df[["channel", "roi", "total_spend", "contribution"]].to_dict(orient="records")
     
+    # Extract internlas from attrs for simulator
+    if "base_effects" in contrib_df.attrs:
+        model_internals = {
+            "base_effects": contrib_df.attrs["base_effects"].tolist(),
+            "beta_eff_matrix": contrib_df.attrs["beta_eff_matrix"].tolist(),
+            "total_predicted_revenue": contrib_df.attrs["total_predicted_revenue"],
+            "channels": m_data["channel_names"],
+        }
+        deliverables["model_internals"] = model_internals
+    else:
+        model_internals = {}
+
     if log_to_mlflow:
         mlflow.log_dict({"contributions": deliverables["contributions"]}, "deliverables/contributions.json")
         mlflow.log_dict({"roi": deliverables["roi"]}, "deliverables/roi.json")
+        if model_internals:
+            mlflow.log_dict(model_internals, "deliverables/model_internals.json")
     
     print(f"   Contribution range: {contrib_df['contribution'].min():,.0f} to {contrib_df['contribution'].max():,.0f}")
     
@@ -383,11 +384,9 @@ def generate_all_deliverables(
         m_data["territory_idx_train"],
         m_data["channel_names"],
         regions,
+        X_features=m_data.get("X_features_train"),
+        X_season=m_data.get("X_season_train"),
     )
-    
-    # Convert log→linear
-    contrib_by_territory_df["contribution_log"] = contrib_by_territory_df["contribution"]
-    contrib_by_territory_df["contribution"] = contrib_by_territory_df["contribution_log"] * scale_factor
     
     # Override total_spend with raw spend per territory
     df_train = m_data["df_train"]

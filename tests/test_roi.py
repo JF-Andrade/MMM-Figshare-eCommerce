@@ -21,14 +21,12 @@ def test_compute_ridge_roi_reverses_scaler():
     })
     y = 2 * X["CHANNEL_A_sat"] + 1 * X["CHANNEL_B_sat"] + 0.5 * X["trend"] + 10
     
-    # Fit pipeline
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("ridge", Ridge(alpha=0.01)),
     ])
     pipeline.fit(X, y)
     
-    # Compute ROI
     channels = ["CHANNEL_A", "CHANNEL_B"]
     y_mean = float(y.mean())
     roi_df = compute_ridge_roi(pipeline, X, channels, y_mean)
