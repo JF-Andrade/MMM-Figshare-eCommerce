@@ -14,8 +14,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# --- ENVIRONMENT CONFIGURATION (Fix for Windows Deadlocks) ---
+# Allow multiple OpenMP libraries to coexist to prevent deadlocks
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# Force Intel MKL and OpenMP to use a single thread per chain to avoid inner-loop contention
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+# -----------------------------------------------------------
 
 # Add project to path
 PROJECT_ROOT = Path(__file__).parent.parent

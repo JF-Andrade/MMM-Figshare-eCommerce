@@ -20,6 +20,14 @@ os.environ["JAX_ENABLE_X64"] = "True"
 os.environ["PYTENSOR_FLAGS"] = "floatX=float64,int_dtype=int64"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+# --- OPENMP & THREADING (Fix for Windows Deadlocks) ---
+# Allow multiple OpenMP libraries to coexist (often happens with Intel MKL + JAX/PyMC)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# Force Intel MKL and OpenMP to use a single thread per chain to avoid deadlocks
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+# -----------------------------------------------------
+
 import logging
 import numpy as np
 import pandas as pd
