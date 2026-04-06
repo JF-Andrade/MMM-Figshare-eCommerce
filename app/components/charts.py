@@ -4,7 +4,6 @@ Chart components for dashboard.
 
 from __future__ import annotations
 
-from typing import Any
 
 import pandas as pd
 import plotly.express as px
@@ -125,8 +124,6 @@ def reallocation_chart(optimization: list[dict]) -> None:
     pct_col = "delta_spend_pct" if "delta_spend_pct" in df.columns else "change_pct"
     df = df.sort_values(pct_col)
 
-    colors = ["green" if x > 0 else "red" for x in df[pct_col]]
-
     fig = px.bar(
         df,
         x=pct_col,
@@ -213,7 +210,6 @@ def saturation_curves_chart(saturation: list[dict]) -> None:
         ))
         
         # Add vertical line at L (half-saturation point)
-        y_at_L = (L ** k) / (L ** k + L ** k + 1e-8)  # Should be ~0.5
         fig.add_vline(
             x=L,
             line_width=1,
@@ -424,7 +420,6 @@ def response_curves_chart(contributions: list[dict], saturation: list[dict]) -> 
         channel = ch["channel"]
         
         # Generate spend range [0, 2x current] normalized
-        current_spend = spend_map.get(channel, 0.5)
         x_range = np.linspace(0.01, min(2.0, 1.0), 100)
         
         # Hill response: contribution = beta * hill(x)

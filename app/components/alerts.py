@@ -18,7 +18,6 @@ def saturation_alert_badge(channel: str, saturation_pct: float, threshold: float
     """
     if saturation_pct >= threshold:
         severity = "high" if saturation_pct >= 1.0 else "medium"
-        icon = "🔴" if severity == "high" else "🟡"
         
         if severity == "high":
             st.error(f"**{channel}**: {saturation_pct:.0%} saturated - diminishing returns")

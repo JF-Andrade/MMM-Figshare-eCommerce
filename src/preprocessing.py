@@ -11,34 +11,21 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import Any, TYPE_CHECKING
-from sklearn.preprocessing import StandardScaler
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from numpy.typing import NDArray
+    pass
 
 from src.config import (
-    CHANNELS,
-    METRICS,
     MIN_NONZERO_RATIO,
     MIN_SPEND_THRESHOLD,
-    DEFAULT_ADSTOCK_DECAY,
-    DEFAULT_HALF_SATURATION_PCT,
-    DEFAULT_ADSTOCK_LMAX,
-    DEFAULT_LOG_OFFSET,
-    DEFAULT_SATURATION_SLOPE,
     RAW_DATE_COL,
     RAW_REGION_COL,
-    DATE_COL,
-    GEO_COL,
     TARGET_COL,
     SPEND_COLS,
     TRAFFIC_COLS,
     CONTROL_COLS,
     SEASON_COLS,
-    ALL_FEATURES,
-    HOLDOUT_WEEKS,
-    EPSILON,
 )
 
 from src.transformations import (
@@ -48,7 +35,6 @@ from src.transformations import (
     filter_low_variance_channels,
     add_seasonality_features,
     add_event_features,
-    create_hierarchy_indices,
 )
 
 

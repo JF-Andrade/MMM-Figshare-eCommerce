@@ -17,8 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.shared import shared_sidebar, page_header, init_page_config, get_selected_territory
 from app.components import adstock_decay_chart, saturation_curves_chart, roi_with_uncertainty_chart
-from app.mlflow_loader import get_mlflow_client, get_all_runs, get_run_metrics, get_run_params, load_deliverable
-from src.comparison import compare_models, generate_comparison_insight
+from app.mlflow_loader import get_mlflow_client, get_all_runs, get_run_metrics, get_run_params
 
 init_page_config("Technical Details")
 

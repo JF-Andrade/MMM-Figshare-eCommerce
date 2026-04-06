@@ -9,17 +9,14 @@ import holidays
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from sklearn.preprocessing import StandardScaler
 
 from src.config import (
     DEFAULT_LOG_OFFSET,
     DEFAULT_ADSTOCK_DECAY,
     DEFAULT_ADSTOCK_LMAX,
     DEFAULT_SATURATION_SLOPE,
-    DEFAULT_IMPUTE_VALUE,
     REGION_HOLIDAY_MAP,
     RAW_REGION_COL,
-    RAW_CURRENCY_COL,
     RAW_DATE_COL,
     GEO_COL,
     MIN_NONZERO_RATIO,

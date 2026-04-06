@@ -12,12 +12,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 import arviz as az
-import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import pandas as pd
 import pymc as pm
-import pytensor
 from sklearn.preprocessing import StandardScaler
 import tempfile
 import pickle
@@ -35,27 +33,19 @@ from src.config import (
     MCMC_TARGET_ACCEPT,
     MCMC_TUNE,
     MCMC_MAX_TREEDEPTH,
-    MIN_NONZERO_RATIO,
     MLFLOW_EXPERIMENT_NAME,
     MLFLOW_TRACKING_URI,
     SEED,
-    SPEND_COLS,
     TARGET_COL,
-    YEARLY_SEASONALITY,
-    ALL_FEATURES,
-    SEASON_COLS,
     DATE_COL,
     GEO_COL,
-    MIN_WEEKS_PER_REGION,
 )
 from src.data_loader import get_valid_regions, load_data
 from src.preprocessing import (
-    filter_low_variance_channels,
     create_hierarchy_indices,
     prepare_weekly_data,
     get_panel_holdout_indices,
 )
-from src.transformations import normalize_spend_by_currency
 from src.models.hierarchical_bayesian import (
     build_hierarchical_mmm,
     fit_model as fit_custom_model,
@@ -63,14 +53,9 @@ from src.models.hierarchical_bayesian import (
     predict as predict_custom,
     evaluate as evaluate_custom,
 )
-from src.deliverables import generate_all_deliverables
-from src.insights import (
-    plot_regional_comparison,
-    plot_roi_heatmap,
-)
 
 if TYPE_CHECKING:
-    from numpy.typing import NDArray
+    pass
 
 
 def prepare_hierarchical_data(

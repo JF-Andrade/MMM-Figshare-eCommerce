@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import arviz as az
 import matplotlib.pyplot as plt
@@ -27,7 +27,7 @@ import pandas as pd
 import pymc as pm
 from scipy.optimize import LinearConstraint, minimize
 
-from src.config import EPSILON, TARGET_COL
+from src.config import EPSILON
 from src.models.hierarchical_bayesian import (
     check_convergence,
     compute_channel_contributions,
@@ -39,7 +39,7 @@ from src.models.hierarchical_bayesian import (
 )
 
 if TYPE_CHECKING:
-    from pymc_marketing.mmm import MMM
+    pass
 
 
 # =============================================================================
@@ -455,7 +455,6 @@ def optimize_budget_by_territory(
     for _, row in contrib_territory_df.iterrows():
         ch = row["channel"]
         total_spend = row["total_spend"]
-        contribution = row["contribution"]
         params = param_map.get(ch, {})
 
         L = params.get("L_mean", 0.3)
@@ -796,75 +795,16 @@ def evaluate_model_splits(
     )
 
 
-def log_predictions(
-    m_data: dict,
-    y_pred_train_log: np.ndarray,
-    y_pred_log: np.ndarray,
-) -> None:
-    """Save predictions DataFrame to MLflow."""
-    n_train, n_test = len(m_data["y_train"]), len(m_data["y_test"])
-
-    predictions_df = pd.DataFrame({
-        "date": np.concatenate([m_data["dates_train"], m_data["dates_test"]]),
-        "territory": np.concatenate([m_data["territories_train"], m_data["territories_test"]]),
-        "actual_log": np.concatenate([m_data["y_train"], m_data["y_test"]]),
-        "predicted_log": np.concatenate([y_pred_train_log, y_pred_log]),
-        "actual": np.concatenate([m_data["y_train_original"], m_data["y_test_original"]]),
-        "predicted": np.concatenate([np.expm1(y_pred_train_log), np.expm1(y_pred_log)]),
-        "split": np.array(["train"] * n_train + ["test"] * n_test),
-    })
-    mlflow.log_dict(
-        {"predictions": predictions_df.to_dict(orient="records")}, "deliverables/predictions.json"
-    )
-    print("Saved predictions.json")
 
 
 
 
-def log_global_contributions(
-    idata: az.InferenceData,
-    m_data: dict,
-) -> pd.DataFrame:
-    """Compute and log global channel contributions and ROI."""
-    print("Computing global contributions...")
-    contrib_df = compute_channel_contributions(idata, m_data)
-
-    # compute_channel_contributions now returns linear dollars via counterfactual marginals.
-    # No scaling factor is required.
-    contrib_df = contrib_df.sort_values("contribution_mean", ascending=False)
-    mlflow.log_dict(contrib_df.to_dict(orient="records"), "metrics/global_contributions.json")
-
-    return contrib_df
 
 
-def log_roi_with_hdi(
-    idata: az.InferenceData,
-    m_data: dict,
-    hdi_prob: float = 0.94,
-) -> pd.DataFrame:
-    """Compute and log ROI with HDI uncertainty intervals."""
-    roi_df = compute_roi_with_hdi(idata, m_data, hdi_prob=hdi_prob)
-
-    # ROI is already in correct linear scale.
-
-    roi_df = roi_df.sort_values("roi_mean", ascending=False)
-    mlflow.log_dict(roi_df.to_dict(orient="records"), "metrics/roi_hdi.json")
-    return roi_df
 
 
-def log_regional_metrics(
-    idata: az.InferenceData,
-    m_data: dict,
-    regions: list[str],
-) -> pd.DataFrame:
-    """Compute and log per-region channel contributions."""
-    print("Computing regional contributions...")
-    regional_df = compute_channel_contributions_by_territory(idata, m_data, regions)
 
-    # Regional contributions are already in linear scale.
 
-    mlflow.log_dict(regional_df.to_dict(orient="records"), "metrics/regional_contributions.json")
-    return regional_df
 
 
 # Used by: Hierarchical Bayesian model (marginal ROAS analysis)
@@ -975,161 +915,12 @@ def compute_marginal_roas(
     return results
 
 
-# Used by: Hierarchical Bayesian model (log marginal ROAS artifact)
-def log_marginal_roas(
-    contributions_df: pd.DataFrame,
-    saturation_params: list[dict],
-) -> list[dict]:
-    """Compute and log marginal ROAS to MLflow."""
-    marginal_data = compute_marginal_roas(contributions_df, saturation_params)
-    mlflow.log_dict({"marginal_roas": marginal_data}, "deliverables/marginal_roas.json")
-    print(f"Logged marginal ROAS for {len(set(d['channel'] for d in marginal_data))} channels")
-    return marginal_data
-
-def log_parameter_estimates(
-    idata: az.InferenceData,
-    m_data: dict,
-    regions: list[str],
-) -> tuple[list[dict], list[dict]]:
-    """
-    Extract and log adstock/saturation parameters (global and territory-level).
-    
-    The model uses:
-    - alpha_channel: Adstock decay rate (Beta prior)
-    - L_channel: Hill half-saturation point (HalfNormal prior)
-    - k_channel: Hill steepness (Gamma prior)
-    
-    Returns:
-        Tuple of (global_saturation_params, territory_saturation_params)
-    """
-    posterior = idata.posterior
-    channels = m_data["channel_names"]
-    
-    # --- Global Parameters ---
-    # Extract posterior means
-    alpha_vals = posterior["alpha_channel"].mean(dim=["chain", "draw"]).values
-    L_vals = posterior["L_channel"].mean(dim=["chain", "draw"]).values
-    k_vals = posterior["k_channel"].mean(dim=["chain", "draw"]).values
-    
-    # Build global saturation params (for optimizer)
-    saturation_params = []
-    adstock_params = []
-    for i, ch in enumerate(channels):
-        saturation_params.append({
-            "channel": ch,
-            "L_mean": float(L_vals[i]),
-            "k_mean": float(k_vals[i]),
-        })
-        adstock_params.append({
-            "channel": ch,
-            "alpha_mean": float(alpha_vals[i]),
-        })
-    
-    # Log combined summary
-    summary_dict = {
-        "adstock_params": adstock_params,
-        "saturation_params": saturation_params,
-    }
-    mlflow.log_dict(summary_dict, "metrics/parameter_summary.json")
-    
-    # --- Territory-level Parameters ---
-    saturation_territory_params = []
-    adstock_territory_params = []
-    
-    if "L_territory" in posterior and "alpha_territory" in posterior:
-        L_terr = posterior["L_territory"].mean(dim=["chain", "draw"]).values  # (n_territories, n_channels)
-        alpha_terr = posterior["alpha_territory"].mean(dim=["chain", "draw"]).values
-        
-        for t_idx, region in enumerate(regions):
-            for c_idx, ch in enumerate(channels):
-                saturation_territory_params.append({
-                    "territory": region,
-                    "channel": ch,
-                    "L_mean": float(L_terr[t_idx, c_idx]),
-                    "k_mean": float(k_vals[c_idx]),  # k is global
-                })
-                adstock_territory_params.append({
-                    "territory": region,
-                    "channel": ch,
-                    "alpha_mean": float(alpha_terr[t_idx, c_idx]),
-                })
-        
-        summary_dict["adstock_territory_params"] = adstock_territory_params
-        summary_dict["saturation_territory_params"] = saturation_territory_params
-        
-        # Re-log with territory data
-        mlflow.log_dict(summary_dict, "metrics/parameter_summary.json")
-    
-    return saturation_params, saturation_territory_params
 
 
-def log_optimization_results(
-    idata: az.InferenceData,
-    m_data: dict,
-    regions: list[str],
-    contrib_df: pd.DataFrame,
-    saturation_params: list,
-    saturation_territory_params: list,
-) -> None:
-    """Compute and log budget optimization results (global and by territory)."""
-    
-    # 1. Global Optimization
-    print("Optimizing global budget...")
-    total_budget = contrib_df["total_spend"].sum()
-    n_obs_total = len(m_data["df_train"]) # Global observations
-    # Actually, n_obs for global optimization should be per-channel average spend basis?
-    # optimize_hierarchical_budget expects n_obs to normalize.
-    
-    global_opt = optimize_hierarchical_budget(
-        contrib_df,
-        saturation_params,
-        total_budget,
-        n_obs=n_obs_total
-    )
-    
-    mlflow.log_dict(global_opt, "deliverables/budget_optimization_global.json")
-    
-    # 2. Regional Optimization
-    regional_results = []
-    print("Optimizing regional budgets...")
-    
-    # We need per-territory contribution/spend data
-    # compute_channel_contributions_by_territory provided aggregated data.
-    # We need to structure it for `optimize_budget_by_territory`.
-    # It expects: channel, total_spend, contribution, n_obs
-    
-    # Extract regional data from m_data or re-compute?
-    # compute_channel_contributions_by_territory returns DataFrame with:
-    # region, channel, contribution_mean, ...
-    # We also need 'total_spend' per region/channel.
-    
-    # Get spend per region/channel
-    df_train = m_data["df_train"]
-    spend_cols = m_data["spend_cols_raw"]
-    
-    for region in regions:
-        region_mask = df_train["TERRITORY_NAME"] == region # Assuming column name
-        if not region_mask.any():
-            # Try splitting by territory_idx if needed, but let's assume df_train has the col
-            # Check m_data keys... "territories_train" is array
-            pass
-            
-        region_spend = df_train[m_data["territories_train"] == region][spend_cols].sum()
-        n_obs_region = (m_data["territories_train"] == region).sum()
-        
-        # Get contributions for this region
-        # We could re-call compute... or rely on passed inputs?
-        # Argument `contrib_df` passed to this function is GLOBAL.
-        # We don't have regional contrib_df passed in.
-        # But we logged it in `log_regional_metrics`!
-        # Ideally `log_optimization_results` should take `regional_contrib_df` as input.
-        # For now, to keep signature matching, we re-calculate or simplistic approach.
-        
-        # Simplistic: Skip regional optimization if data not handy, to avoid breakage.
-        # Or better: Implement a robust check.
-        pass
-    
-    mlflow.log_dict({"regional_optimization": regional_results}, "deliverables/budget_optimization_regional.json")
+
+
+
+
 
 
 # =============================================================================
@@ -1211,20 +1002,7 @@ def compute_blended_metrics(
     }
 
 
-def log_channel_metrics(
-    contrib_df: pd.DataFrame,
-    aov: float,
-) -> pd.DataFrame:
-    """Compute and log channel efficiency metrics to MLflow."""
-    metrics_df = compute_channel_metrics(contrib_df, aov)
-    mlflow.log_dict(metrics_df.to_dict(orient="records"), "deliverables/channel_metrics.json")
-    return metrics_df
 
 
-def log_blended_metrics(
-    channel_metrics_df: pd.DataFrame,
-) -> dict:
-    """Compute and log blended efficiency metrics to MLflow."""
-    blended = compute_blended_metrics(channel_metrics_df)
-    mlflow.log_dict(blended, "deliverables/blended_metrics.json")
-    return blended
+
+

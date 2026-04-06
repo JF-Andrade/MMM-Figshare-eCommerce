@@ -1,7 +1,6 @@
 """Tests for marginal ROAS calculation."""
 
 import pandas as pd
-import pytest
 
 
 def test_marginal_roas_exhibits_diminishing_returns():

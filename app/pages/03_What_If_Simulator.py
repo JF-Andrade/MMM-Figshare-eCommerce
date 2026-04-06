@@ -60,9 +60,6 @@ def simulate_budget(
     # To keep the UI fast, we just recompute the difference.
     # For now, let's keep the exact multiplier delta.
     
-    # Let's extract base effect out of model internals
-    base_effect_linear = model_internals.get("base_effect_linear", 0.0)
-    
     # If base is missing, we can just use total_predicted ratio
     
     for channel, new_spend in spend_dict.items():

@@ -14,11 +14,10 @@ import json
 import logging
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from functools import wraps
-from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
@@ -26,7 +25,6 @@ import mlflow
 
 from src.config import (
     PipelineConfig,
-    generate_run_id,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT_NAME,
 )
@@ -395,7 +393,4 @@ class MMMPipeline:
         logger.info(f"Exported: {output_path}")
 
 
-def create_pipeline(**kwargs) -> MMMPipeline:
-    """Factory function to create pipeline with custom config."""
-    config = PipelineConfig(**kwargs)
-    return MMMPipeline(config)
+

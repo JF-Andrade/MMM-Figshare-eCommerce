@@ -1,7 +1,6 @@
 """Tests for Horseshoe prior tau0 formula correctness."""
 
 import numpy as np
-import pytest
 
 
 def test_tau0_formula_matches_literature():

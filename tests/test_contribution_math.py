@@ -1,11 +1,43 @@
 import numpy as np
-import pandas as pd
-import arviz as az
-import xarray as xr
 from src.models.hierarchical_bayesian import (
-    _compute_linear_contributions,
-    _compute_base_effects,
+    geometric_adstock_numpy,
+    hill_saturation_numpy,
 )
+
+def _compute_linear_contributions(
+    X_spend: np.ndarray,
+    alpha_territory: np.ndarray,
+    L_territory: np.ndarray,
+    k_channel: np.ndarray,
+    beta_channel: np.ndarray,
+    beta_territory: np.ndarray,
+    territory_idx: np.ndarray,
+    base_mu: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute log and linear (counterfactual) contributions.
+    Moved from src.models.hierarchical_bayesian as it is only used for testing.
+    """
+    n_obs, n_channels = X_spend.shape
+    log_contrib = np.zeros((n_obs, n_channels))
+    
+    for c in range(n_channels):
+        x_adstock = geometric_adstock_numpy(
+            X_spend[:, c], alpha_territory[:, c], territory_idx
+        )
+        L_obs = L_territory[territory_idx, c]
+        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
+        beta_eff = beta_channel[c] + beta_territory[territory_idx, c]
+        log_contrib[:, c] = beta_eff * x_sat
+        
+    full_mu = base_mu + log_contrib.sum(axis=1)
+    linear_contrib = np.zeros((n_obs, n_channels))
+    
+    for c in range(n_channels):
+        mu_without = full_mu - log_contrib[:, c]
+        linear_contrib[:, c] = np.exp(full_mu) - np.exp(mu_without)
+        
+    return linear_contrib, log_contrib
 
 def test_counterfactual_math_consistency():
     """

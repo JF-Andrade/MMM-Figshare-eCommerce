@@ -168,7 +168,7 @@ def main() -> int:
     pipeline = MMMPipeline(config)
 
     try:
-        state = pipeline.run(
+        pipeline.run(
             stages=stages,
             skip_stages=skip_stages or None,
         )

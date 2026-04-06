@@ -34,7 +34,6 @@ def main():
 
     # Use global territory filter from sidebar
     territory = get_selected_territory()
-    context_label = f" ({territory})" if territory else ""
 
     # Get data based on territory selection
     optimization_territory = deliverables.get("optimization_territory")

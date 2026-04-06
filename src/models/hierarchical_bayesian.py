@@ -21,15 +21,12 @@ os.environ["PYTENSOR_FLAGS"] = "floatX=float64,int_dtype=int64"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import logging
-import json
 import numpy as np
 import pandas as pd
-import pytensor
 import pytensor.tensor as pt
 import pymc as pm
 import arviz as az
-from typing import Dict, List, Optional, Union, Any, TYPE_CHECKING, Literal
-from pathlib import Path
+from typing import Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -168,69 +165,6 @@ def hill_saturation_numpy(
     L_powered = np.power(L_safe, k)
     
     return x_powered / (L_powered + x_powered)
-
-
-# =============================================================================
-# Counterfactual Analysis Helpers (Internal)
-# =============================================================================
-
-
-def _compute_linear_contributions(
-    X_spend: "NDArray",
-    alpha_territory: "NDArray",
-    L_territory: "NDArray",
-    k_channel: "NDArray",
-    beta_channel: "NDArray",
-    beta_territory: "NDArray",
-    territory_idx: "NDArray",
-    base_mu: "NDArray",
-) -> tuple["NDArray", "NDArray"]:
-    """
-    Compute log and linear (counterfactual) contributions.
-    """
-    n_obs, n_channels = X_spend.shape
-    log_contrib = np.zeros((n_obs, n_channels))
-    
-    for c in range(n_channels):
-        x_adstock = geometric_adstock_numpy(
-            X_spend[:, c], alpha_territory[:, c], territory_idx
-        )
-        L_obs = L_territory[territory_idx, c]
-        x_sat = hill_saturation_numpy(x_adstock, L_obs, k_channel[c])
-        beta_eff = beta_channel[c] + beta_territory[territory_idx, c]
-        log_contrib[:, c] = beta_eff * x_sat
-        
-    full_mu = base_mu + log_contrib.sum(axis=1)
-    linear_contrib = np.zeros((n_obs, n_channels))
-    
-    for c in range(n_channels):
-        mu_without = full_mu - log_contrib[:, c]
-        linear_contrib[:, c] = np.exp(full_mu) - np.exp(mu_without)
-        
-    return linear_contrib, log_contrib
-
-
-def _compute_base_effects(
-    idata: az.InferenceData,
-    X_features: "NDArray",
-    X_season: "NDArray",
-    territory_idx: "NDArray",
-) -> "NDArray":
-    """Compute base effects (intercept + features + season) in log space."""
-    alpha_global = idata.posterior["alpha_global"].mean(dim=["chain", "draw"]).values
-    alpha_terr_raw = idata.posterior["alpha_territory_int_raw"].mean(dim=["chain", "draw"]).values
-    sigma_terr_int = idata.posterior["sigma_territory_int"].mean(dim=["chain", "draw"]).values
-    beta_feat = idata.posterior["beta_features"].mean(dim=["chain", "draw"]).values
-    gamma_season = idata.posterior["gamma_season"].mean(dim=["chain", "draw"]).values
-    
-    alpha_terr = alpha_global + alpha_terr_raw * sigma_terr_int
-    
-    base_mu = (
-        alpha_terr[territory_idx]
-        + np.dot(X_features, beta_feat)
-        + np.dot(X_season, gamma_season)
-    )
-    return base_mu
 
 
 # =============================================================================

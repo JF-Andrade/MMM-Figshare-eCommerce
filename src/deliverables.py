@@ -31,7 +31,6 @@ from src.insights import (
 
 if TYPE_CHECKING:
     import arviz as az
-    from numpy.typing import NDArray
 
 
 def _extract_posterior_parameters(

@@ -23,7 +23,7 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_percentage_error, r2_score
 
 if TYPE_CHECKING:
-    from numpy.typing import NDArray
+    pass
 
 
 # =============================================================================

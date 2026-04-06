@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 from src.config import RAW_DATE_COL
 
 def test_apply_adstock() -> None:

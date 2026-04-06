@@ -20,7 +20,6 @@ from app.components import (
     kpi_row,
     roi_bar_chart,
     contribution_pie_chart,
-    roi_heatmap,
     display_saturation_alerts,
     display_roi_anomalies,
     get_excel_download_button,

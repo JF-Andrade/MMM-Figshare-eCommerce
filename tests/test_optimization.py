@@ -1,6 +1,5 @@
 import pandas as pd
 import pytest
-import numpy as np
 
 from src.insights import optimize_hierarchical_budget
 

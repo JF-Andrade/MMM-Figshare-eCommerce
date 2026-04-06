@@ -1,10 +1,8 @@
 """Tests for data_loader module."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 
 def test_load_data_returns_dataframe(tmp_path: Path) -> None:

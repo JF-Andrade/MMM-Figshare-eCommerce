@@ -58,19 +58,15 @@ from src.config import (
 )
 from src.data_loader import load_data
 from src.preprocessing import (
-    apply_adstock,
-    apply_saturation_with_max,
-    filter_low_variance_channels,
     prepare_weekly_data,
     prepare_baseline_features,
-    impute_missing_values,
     transform_test_fold,
 )
 from src.baseline_evaluation import evaluate_ridge_model, compute_ridge_roi
 from src.insights import compute_ridge_coefficients, plot_baseline_results
 
 if TYPE_CHECKING:
-    from numpy.typing import NDArray
+    pass
 
 
 
