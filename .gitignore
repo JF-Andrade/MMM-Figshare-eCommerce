@@ -95,3 +95,4 @@ credentials.json
 # Private documentation
 docs/model_mathematics.md
 .gitnexus
+specs/

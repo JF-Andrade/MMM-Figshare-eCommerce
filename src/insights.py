@@ -242,13 +242,18 @@ def optimize_hierarchical_budget(
         """Wrapper for scalar inputs using imported function."""
         return float(hill_saturation_numpy(np.asarray(x), np.asarray(L), np.asarray(k)))
 
-    for p in saturation_params:
-        if p.get("max_spend", 0) <= 0:
-            raise ValueError(f"Channel '{p.get('channel', 'unknown')}' missing valid 'max_spend'.")
+    import logging
     
+    # Pre-validation: ensure we have parameters, but don't crash on zero-spend channels
+    if not saturation_params:
+         logging.warning("No saturation parameters provided for optimization.")
+         return {"allocation": [], "metrics": {}}
+
     # 1. Prepare Data - extract L and k from saturation params
     model_data = []
     param_map = {p["channel"]: p for p in saturation_params}
+    
+    skipped_channels = []
 
     for _, row in contrib_df.iterrows():
         ch = row["channel"]
@@ -256,16 +261,22 @@ def optimize_hierarchical_budget(
         contribution = row["contribution"]
         params = param_map.get(ch, {})
 
+        # Defensive handling of missing or zero max_spend
+        max_spend = params.get("max_spend", 0)
+        if max_spend <= 0:
+            skipped_channels.append(ch)
+            max_spend = 1.0 # Dummy for normalization safety, but is_fixed will protect it
+
         L = params.get("L_mean", 0.3)
         k = params.get("k_mean", 2.0)
-        max_spend = params["max_spend"]
 
         avg_spend = total_spend / n_obs if n_obs > 0 else total_spend
         avg_spend_norm = avg_spend / max_spend if max_spend > 0 else 0.5
         beta = params.get("beta_mean", 1.0)
         sat_current = hill_saturation(avg_spend_norm, L, k)
         
-        is_fixed = total_spend <= 0 or contribution <= 0 or beta <= 0
+        # A channel is fixed if it has no spend, no contribution, no effect, OR no identifiable saturation (max_spend <= 0)
+        is_fixed = total_spend <= 0 or contribution <= 0 or beta <= 0 or params.get("max_spend", 0) <= 0
 
         model_data.append({
             "channel": ch,
@@ -278,6 +289,9 @@ def optimize_hierarchical_budget(
             "is_fixed": is_fixed,
             "sat_current": sat_current,
         })
+    
+    if skipped_channels:
+        logging.warning(f"Channels with zero/invalid historical spend will be fixed at 0 in optimization: {skipped_channels}")
 
     # 2. Objective Function using Multiplicative formulation
     def objective(avg_spends):

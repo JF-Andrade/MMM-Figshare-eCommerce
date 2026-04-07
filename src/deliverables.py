@@ -260,17 +260,22 @@ def generate_all_deliverables(
         channel = param["channel"]
         raw_col = f"{channel}_SPEND"
         
-        # Prefer spend_max from training (consistent with L/k calibration)
+        # Robust max_spend extraction:
+        # 1. Prefer spend_max from training metadata (consistent with L/k calibration)
+        # 2. Fallback to max of training dataframe column
+        # 3. Final fallback to contrib_df total spend
         if "spend_max_by_channel" in m_data and channel in m_data["spend_max_by_channel"]:
             max_spend = float(m_data["spend_max_by_channel"][channel])
         elif raw_col in m_data["df_train"].columns:
-            # Fallback for backward compatibility
             max_spend = float(m_data["df_train"][raw_col].max())
         else:
-            max_spend = float(contrib_df.loc[contrib_df["channel"] == channel, "total_spend"].iloc[0])
+            # Safe extraction from contrib_df
+            spend_matches = contrib_df.loc[contrib_df["channel"] == channel, "total_spend"]
+            max_spend = float(spend_matches.iloc[0]) if not spend_matches.empty else 0.0
         
-        param["max_spend"] = max_spend
-        channel_max_spend[channel] = max_spend
+        # Ensure it's a valid float (not NaN) and handle the 0 case
+        param["max_spend"] = max_spend if (max_spend == max_spend) else 0.0 # x == x is False for NaN
+        channel_max_spend[channel] = param["max_spend"]
     
     # FIX #8: Add max_spend to territory params using global channel max
     # For territory optimization, we use the global max (consistent with training normalization)
