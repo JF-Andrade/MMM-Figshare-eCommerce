@@ -45,7 +45,9 @@ const PerformanceBubbleChart: React.FC = () => {
       .domain([0, d3.max(data, (d: any) => d.contribution)])
       .range([5, 40]);
 
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10);
+    const colorScale = d3.scaleOrdinal()
+      .domain(data.map((d: any) => d.channel))
+      .range(['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']);
 
     // Axes
     const xAxis = d3.axisBottom(xScale).ticks(5).tickFormat(d3.format("$.2s" as any));
@@ -53,16 +55,19 @@ const PerformanceBubbleChart: React.FC = () => {
 
     g.append("g")
       .attr("transform", `translate(0,${innerHeight})`)
+      .attr("class", "axis-grid")
       .call(xAxis)
       .append("text")
       .attr("x", innerWidth / 2)
       .attr("y", 45)
       .attr("fill", "var(--text-dim)")
       .attr("text-anchor", "middle")
-      .style("font-size", "14px")
-      .text("Total Spend ($)");
+      .style("font-size", "12px")
+      .style("font-weight", "600")
+      .text("TOTAL SPEND ($)");
 
     g.append("g")
+      .attr("class", "axis-grid")
       .call(yAxis)
       .append("text")
       .attr("transform", "rotate(-90)")
@@ -70,67 +75,99 @@ const PerformanceBubbleChart: React.FC = () => {
       .attr("y", -50)
       .attr("fill", "var(--text-dim)")
       .attr("text-anchor", "middle")
-      .style("font-size", "14px")
-      .text("ROI (x)");
+      .style("font-size", "12px")
+      .style("font-weight", "600")
+      .text("ROI (X)");
 
     // Add grid lines
     g.append("g")
       .attr("class", "grid")
       .attr("transform", `translate(0,${innerHeight})`)
       .call(d3.axisBottom(xScale).tickSize(-innerHeight).tickFormat(() => ""))
+      .style("stroke", "var(--border-color)")
       .style("stroke-opacity", 0.1)
       .style("stroke-dasharray", "3,3");
 
     g.append("g")
       .attr("class", "grid")
       .call(d3.axisLeft(yScale).tickSize(-innerWidth).tickFormat(() => ""))
+      .style("stroke", "var(--border-color)")
       .style("stroke-opacity", 0.1)
       .style("stroke-dasharray", "3,3");
 
     // Bubbles
-    const bubbles = g.selectAll(".bubble")
-      .data(data)
-      .enter()
-      .append("g")
-      .attr("class", "bubble");
+    const bubbles = g.selectAll(".bubble-group")
+      .data(data, (d: any) => d.channel);
 
-    bubbles.append("circle")
+    const bubblesEnter = bubbles.enter()
+      .append("g")
+      .attr("class", "bubble-group");
+
+    bubblesEnter.append("circle")
+      .attr("class", "bubble")
       .attr("cx", (d: any) => xScale(d.total_spend || d.spend))
       .attr("cy", (d: any) => yScale(d.roi))
-      .attr("r", 0) // Start at 0 for animation
-      .attr("fill", (d: any) => colorScale(d.channel))
-      .attr("fill-opacity", 0.6)
-      .attr("stroke", (d: any) => colorScale(d.channel))
+      .attr("r", 0)
+      .attr("fill", (d: any) => colorScale(d.channel) as string)
+      .attr("fill-opacity", 0.3)
+      .attr("stroke", (d: any) => colorScale(d.channel) as string)
       .attr("stroke-width", 2)
       .transition()
-      .duration(800)
-      .delay((_d, i) => i * 100)
+      .duration(1000)
+      .ease(d3.easeElasticOut)
       .attr("r", (d: any) => rScale(d.contribution));
 
+    // Update existing bubbles
+    bubbles.select(".bubble")
+      .transition()
+      .duration(750)
+      .attr("cx", (d: any) => xScale(d.total_spend || d.spend))
+      .attr("cy", (d: any) => yScale(d.roi))
+      .attr("r", (d: any) => rScale(d.contribution));
+
+    // Exit bubbles
+    bubbles.exit()
+      .transition()
+      .duration(300)
+      .attr("r", 0)
+      .remove();
+
     // Labels
-    bubbles.append("text")
+    bubblesEnter.append("text")
+      .attr("class", "bubble-label")
       .attr("x", (d: any) => xScale(d.total_spend || d.spend))
       .attr("y", (d: any) => yScale(d.roi))
       .attr("dy", ".3em")
       .attr("text-anchor", "middle")
       .attr("fill", "white")
       .style("font-size", "10px")
+      .style("font-weight", "600")
       .style("pointer-events", "none")
+      .style("opacity", 0)
       .text((d: any) => {
         const val = rScale(d.contribution);
         return val > 20 ? d.channel.split('_')[0] : "";
-      });
+      })
+      .transition()
+      .duration(1000)
+      .style("opacity", 1);
+
+    bubbles.select(".bubble-label")
+      .transition()
+      .duration(750)
+      .attr("x", (d: any) => xScale(d.total_spend || d.spend))
+      .attr("y", (d: any) => yScale(d.roi));
 
     // Tooltips (simple title for now)
-    bubbles.append("title")
+    bubblesEnter.append("title")
       .text((d: any) => `${d.channel}\nROI: ${d.roi.toFixed(2)}x\nSpend: $${(d.total_spend || d.spend).toLocaleString()}\nContrib: $${d.contribution.toLocaleString()}`);
 
   }, [deliverables, selectedTerritory, loading]);
 
   return (
-    <div className="glass-card animate-in" style={{ padding: '1rem', position: 'relative' }}>
-      <h3 style={{ marginTop: 0, marginBottom: '1.5rem' }}>Channel Performance (ROI Matrix)</h3>
-      <div style={{ width: '100%', overflow: 'hidden' }}>
+    <div className="analytics-card animate-in">
+      <div className="card-title">Channel Performance Matrix</div>
+      <div style={{ width: '100%', overflow: 'hidden', padding: '1rem' }}>
         <svg 
           ref={svgRef} 
           viewBox="0 0 800 500" 
@@ -139,10 +176,10 @@ const PerformanceBubbleChart: React.FC = () => {
           style={{ background: 'transparent' }}
         />
       </div>
-      <div style={{ marginTop: '1rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--primary)', opacity: 0.6 }}></div>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>Bubble size = Conversion Contribution</span>
+      <div style={{ padding: '0 1rem 1rem 1rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--text-dim)', opacity: 0.6 }}></div>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bubble Volume = Revenue Contribution</span>
         </div>
       </div>
     </div>

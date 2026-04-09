@@ -121,10 +121,16 @@ const ChoroplethMap: React.FC = () => {
   }, [deliverables, loading, geoData]);
 
   return (
-    <div className="glass-card animate-in" style={{ padding: '1rem', marginTop: '2rem' }}>
-      <h3 style={{ marginTop: 0, marginBottom: '0.5rem' }}>Territory Performance (Average ROI)</h3>
-      <p style={{ fontSize: '0.8rem', color: 'var(--text-dim)', marginBottom: '1rem' }}>Click a highlighted country to filter the dashboard.</p>
-      <div style={{ width: '100%', overflow: 'hidden' }}>
+    <div className="analytics-card animate-in">
+      <div className="card-title">Geographic Performance Index</div>
+      <div style={{ padding: '0 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', margin: 0 }}>Click highlighted territories to isolate regional data streams.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <div style={{ width: '8px', height: '8px', borderRadius: '1px', background: 'var(--success)' }}></div>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>High ROI</span>
+        </div>
+      </div>
+      <div style={{ width: '100%', overflow: 'hidden', padding: '1rem' }}>
         <svg 
           ref={svgRef} 
           viewBox="0 0 800 400" 

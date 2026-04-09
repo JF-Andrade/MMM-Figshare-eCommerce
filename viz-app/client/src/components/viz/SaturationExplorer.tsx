@@ -57,26 +57,36 @@ const SaturationExplorer: React.FC = () => {
       .domain([0, 1])
       .range([innerHeight, 0]);
 
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10);
+    const colorScale = d3.scaleOrdinal()
+      .domain(params.map((p: any) => p.channel))
+      .range(['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']);
 
     // Axes
     g.append("g")
       .attr("transform", `translate(0,${innerHeight})`)
+      .attr("class", "axis-grid")
       .call(d3.axisBottom(xScale).ticks(5).tickFormat(d3.format("$.2s" as any)))
       .append("text")
       .attr("x", innerWidth / 2)
       .attr("y", 40)
       .attr("fill", "var(--text-dim)")
-      .text("Weekly Spend ($)");
+      .attr("text-anchor", "middle")
+      .style("font-size", "12px")
+      .style("font-weight", "600")
+      .text("WEEKLY SPEND ($)");
 
     g.append("g")
+      .attr("class", "axis-grid")
       .call(d3.axisLeft(yScale).ticks(5).tickFormat(d3.format(".0%")))
       .append("text")
       .attr("transform", "rotate(-90)")
       .attr("x", -innerHeight / 2)
-      .attr("y", -40)
+      .attr("y", -45)
       .attr("fill", "var(--text-dim)")
-      .text("Relative Effectiveness (%)");
+      .attr("text-anchor", "middle")
+      .style("font-size", "12px")
+      .style("font-weight", "600")
+      .text("EFFECTIVENESS (%)");
 
     // Line generator
     const lineGenerator = d3.line<any>()
@@ -92,9 +102,10 @@ const SaturationExplorer: React.FC = () => {
       .attr("class", "curve-group");
 
     curves.append("path")
+      .attr("class", "line")
       .attr("d", d => lineGenerator(d.points))
       .attr("fill", "none")
-      .attr("stroke", d => colorScale(d.channel))
+      .attr("stroke", d => colorScale(d.channel) as string)
       .attr("stroke-width", 2)
       .attr("opacity", 0.6)
       .on("mouseover", function() {
@@ -106,32 +117,42 @@ const SaturationExplorer: React.FC = () => {
 
     // Legend
     const legend = g.append("g")
-      .attr("transform", `translate(${innerWidth + 20}, 0)`);
+      .attr("transform", `translate(${innerWidth + 30}, 0)`);
 
     curveData.forEach((d, i) => {
       const lg = legend.append("g")
         .attr("transform", `translate(0, ${i * 20})`)
-        .style("cursor", "pointer");
+        .style("cursor", "pointer")
+        .on("mouseover", () => {
+          g.selectAll(".line").attr("opacity", 0.1);
+          g.selectAll(".line").filter((cd: any) => cd.channel === d.channel).attr("opacity", 1).attr("stroke-width", 4);
+        })
+        .on("mouseout", () => {
+          g.selectAll(".line").attr("opacity", 0.6).attr("stroke-width", 2);
+        });
 
       lg.append("rect")
-        .attr("width", 12)
-        .attr("height", 12)
-        .attr("fill", colorScale(d.channel));
+        .attr("width", 10)
+        .attr("height", 10)
+        .attr("rx", 1)
+        .attr("fill", colorScale(d.channel) as string);
 
       lg.append("text")
-        .attr("x", 20)
-        .attr("y", 10)
+        .attr("x", 16)
+        .attr("y", 9)
         .attr("fill", "var(--text-dim)")
-        .style("font-size", "12px")
-        .text(d.channel.replace(/_/g, ' ').toLowerCase());
+        .style("font-size", "11px")
+        .style("font-weight", "500")
+        .style("text-transform", "capitalize")
+        .text(d.channel.replace(/_/g, ' '));
     });
 
   }, [deliverables, selectedTerritory, loading]);
 
   return (
-    <div className="glass-card animate-in" style={{ padding: '1rem', marginTop: '2rem' }}>
-      <h3 style={{ marginTop: 0, marginBottom: '1.5rem' }}>Saturation Curves (Diminishing Returns)</h3>
-      <div style={{ width: '100%', overflow: 'hidden' }}>
+    <div className="analytics-card animate-in">
+      <div className="card-title">Saturation Curves</div>
+      <div style={{ width: '100%', overflow: 'hidden', padding: '1rem' }}>
         <svg 
           ref={svgRef} 
           viewBox="0 0 800 400" 
