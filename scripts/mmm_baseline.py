@@ -53,7 +53,6 @@ from src.config import (
     DEFAULT_RIDGE_ALPHA,
     RIDGE_CV_SPLITS,
     RIDGE_CV_GAP,
-    DELIVERABLES_DIR,
     INSPECTION_DIR,
 )
 from src.data_loader import load_data
@@ -213,7 +212,7 @@ def _persist_results(
         mlflow.log_metrics(metrics)
 
         # Save to MLflow as JSON
-        DELIVERABLES_DIR.mkdir(exist_ok=True, parents=True)
+    
         
         mlflow.log_dict({"metrics": metrics}, "deliverables/baseline_metrics.json")
         mlflow.log_dict(
