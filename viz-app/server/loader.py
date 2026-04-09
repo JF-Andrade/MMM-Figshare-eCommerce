@@ -67,9 +67,10 @@ def get_all_runs(client: MlflowClient) -> list[dict]:
             "run_name": run.info.run_name or f"run_{run.info.run_id[:8]}",
             "start_time": run.info.start_time,
             "status": run.info.status,
-            "model_type": run.data.params.get("model_type", "unknown"),
+            "model_type": run.data.params.get("model_type", "hierarchical"),
             "metrics": dict(run.data.metrics),
             "params": dict(run.data.params),
+            "tags": dict(run.data.tags),
         }
         for run in runs
     ]
