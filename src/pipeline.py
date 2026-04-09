@@ -18,15 +18,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from functools import wraps
+from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
 import mlflow
 
 from src.config import (
+    PROJECT_ROOT,
     PipelineConfig,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT_NAME,
+    LAST_STABLE_RUN_DIR,
 )
 
 
@@ -202,7 +205,35 @@ class MMMPipeline:
         logger.info(f"Completed: {[s.name for s in self.state.completed_stages]}")
         logger.info("=" * 60)
 
+        # Trigger decoupled Model Health Audit (Non-blocking)
+        self._trigger_audit()
+
         return self.state
+
+    def _trigger_audit(self) -> None:
+        """Trigger the standalone audit engine as a non-blocking process."""
+        import subprocess
+        import sys
+        
+        logger.info("Triggering non-blocking Model Health Audit...")
+        
+        try:
+            # Use the same python interpreter
+            cmd = [
+                sys.executable, "-m", "src.audit",
+                "--run_id", self.config.run_id
+            ]
+            
+            # Start process and don't wait for it
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=str(PROJECT_ROOT)
+            )
+            logger.info("Audit engine launched in background.")
+        except Exception as e:
+            logger.warning(f"Failed to trigger audit: {e}")
 
     def _run_stage(self, stage: PipelineStage) -> None:
         """Execute a single pipeline stage with timing and error handling."""
@@ -391,6 +422,28 @@ class MMMPipeline:
             json.dump(metadata, f, indent=2, default=str)
 
         logger.info(f"Exported: {output_path}")
+
+        # Sync to last_stable for future drift detection
+        self._sync_stable_model()
+
+    def _sync_stable_model(self) -> None:
+        """Sync current model artifacts to the last_stable directory."""
+        import shutil
+        
+        source_dir = self.config.models_dir
+        dest_dir = LAST_STABLE_RUN_DIR
+        
+        logger.info(f"Syncing stable artifacts to {dest_dir}...")
+        
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for item in ["idata.nc", "model_data.pkl", "regions.pkl"]:
+                src = source_dir / item
+                if src.exists():
+                    shutil.copy2(src, dest_dir / item)
+            logger.info("Stable artifact sync complete.")
+        except Exception as e:
+            logger.warning(f"Failed to sync stable artifacts: {e}")
 
 
 

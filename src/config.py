@@ -24,7 +24,6 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
-DELIVERABLES_DIR = PROJECT_ROOT / "deliverables"
 INSPECTION_DIR = PROJECT_ROOT / "data" / "inspection"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
@@ -114,7 +113,7 @@ ALL_FEATURES = SPEND_COLS + TRAFFIC_COLS + CONTROL_COLS + SEASON_COLS
 # =============================================================================
 
 # Data Quality Filters
-MIN_SPEND_THRESHOLD = 0.05             # Minimum spend share to include channel
+MIN_SPEND_THRESHOLD = 0.10             # Minimum spend share to include channel
 MIN_NONZERO_RATIO = 0.20               # Minimum % of non-zero values required
 DEFAULT_IMPUTE_VALUE = 0.0             # Default value for missing data
 DEFAULT_LOG_OFFSET = 1.0               # Offset for log transformation
@@ -142,7 +141,7 @@ HOLDOUT_WEEKS = 8                      # Out-of-time holdout for all models
 BAYESIAN_N_CALLS = 100
 BAYESIAN_ADSTOCK_BOUNDS = (0.05, 0.8)
 BAYESIAN_SATURATION_BOUNDS = (0.1, 0.5)
-BAYESIAN_ALPHA_BOUNDS = (5, 500.0)
+BAYESIAN_ALPHA_BOUNDS = (5, 1000)
 
 # Ridge Regression CV
 RIDGE_CV_SPLITS = 10
@@ -155,10 +154,10 @@ DEFAULT_RIDGE_ALPHA = 10.0
 
 # --- MCMC Sampler ---
 MCMC_CHAINS = 4
-MCMC_DRAWS = 200
-MCMC_TUNE = 150
-MCMC_TARGET_ACCEPT = 0.85
-MCMC_MAX_TREEDEPTH = 12
+MCMC_DRAWS = 4000
+MCMC_TUNE = 1500
+MCMC_TARGET_ACCEPT = 0.9
+MCMC_MAX_TREEDEPTH = 10
 MCMC_SAMPLER = "numpyro"  # "pymc" or "numpyro" (JAX backend)
 
 # --- Numerical Stability ---
@@ -179,9 +178,9 @@ PRIOR_SATURATION_K_BETA = 2
 PRIOR_SIGMA_SATURATION_TERRITORY = 0.2
 
 # --- Priors: Hierarchical Structure ---
-PRIOR_SIGMA_TERRITORY = 0.5            # Variation between territories
+PRIOR_SIGMA_TERRITORY = 0.2            # Variation between territories (Tightened from 0.5)
 PRIOR_BETA_CHANNEL_SIGMA = 0.5         # Channel effect magnitude
-PRIOR_SIGMA_BETA_TERRITORY = 0.1      # Regional variation in channel effects
+PRIOR_SIGMA_BETA_TERRITORY = 0.02      # Regional variation in channel effects (Tightened from 0.1)
 
 # --- Priors: Horseshoe Regularization (Piironen & Vehtari, 2017) ---
 PRIOR_HORSESHOE_M0 = 5                 # Expected relevant features
@@ -199,7 +198,20 @@ PRIOR_NU_ALPHA = 2                     # Gamma for degrees of freedom
 PRIOR_NU_BETA = 0.5
 
 # =============================================================================
-# 8. EXPERIMENT TRACKING (MLflow)
+# 8. MODEL HEALTH & AUDIT (POST-RUN)
+# =============================================================================
+
+# Thresholds for "Unstable" classification
+MAX_ALLOWED_RHAT = 1.15                # Flag parameters above this
+MAX_DIVERGENCE_PERCENT = 0.01          # Flag if >1% of samples are divergent
+MIN_ESS_PER_CHAIN = 100                # Effective Sample Size minimum
+
+# Concept Drift: Compare against previous run
+DRIFT_THRESHOLD_PCT = 0.25             # 25% shift in ROI triggers drift warning
+LAST_STABLE_RUN_DIR = MODELS_DIR / "last_stable"
+
+# =============================================================================
+# 9. EXPERIMENT TRACKING (MLflow)
 # =============================================================================
 
 MLFLOW_TRACKING_URI = (PROJECT_ROOT / "mlruns").as_uri()
