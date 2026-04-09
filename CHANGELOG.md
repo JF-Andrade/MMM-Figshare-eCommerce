@@ -2,6 +2,21 @@
 
 All notable changes to the MMM project.
 
+## [2026-04-06] Pipeline Stabilization & Git Cleanup
+
+Critical fixes for runtime failures during holdout evaluation and budget optimization.
+
+### Stability & Robustness
+
+- **Adstock Dimensions**: Fixed a `ValueError` in `geometric_adstock_pytensor` by explicitly slicing lag tensors to `n_obs`, ensuring compatibility with short holdout sequences (where `n_obs < l_max`).
+- **Budget Optimizer**: Implemented a "Zero-Spend Defense" in `optimize_hierarchical_budget` to filter out channels with no historical spend, preventing numerical instability and solver crashes.
+- **Metadata Extraction**: Enhanced `generate_all_deliverables` to robustly handle `max_spend` for zero-volume channels, ensuring metadata integrity for the dashboard.
+
+### Repository Management
+
+- **Git Cleanup**: Removed the `specs/` folder from the remote repository history and updated `.gitignore` to prevent future tracking of private specification files.
+- **Testing**: Added `tests/test_adstock_dimensions.py` to validate adstock logic for variable-length sequences.
+
 ## [2026-04-06] Hierarchical MMM Cleanup
 
 Major technical debt reduction by pruning orphaned legacy code and streamlining math helpers.

@@ -506,7 +506,18 @@ python scripts/mmm_baseline.py
 
 # Hierarchical model (Bayesian)
 # Optional: limit regions for faster testing
-python scripts/mmm_hierarchical.py --max-regions 5
+### Interactive Viz App (D3.js)
+
+For high-fidelity, interactive exploration of ROI and saturation curves:
+
+```bash
+# Start backend (Port 8000)
+python -m viz-app.server.main
+
+# Start frontend (Port 5173)
+cd viz-app/client
+npm install
+npm run dev
 ```
 
 ### Output Files
